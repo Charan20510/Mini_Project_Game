@@ -24,7 +24,7 @@ import torch.nn.functional as F
 # ---------------------------------------------------------------------------
 
 # Tile category mapping (must match rl_env.py tile IDs)
-_NUM_OBS_CHANNELS = 12  # Expanded from 10 to 12
+_NUM_OBS_CHANNELS = 13  # Expanded from 12 to 13 (added Path Trace History)
 
 
 class ObservationPreprocessor:
@@ -65,14 +65,26 @@ class ObservationPreprocessor:
         px, py = int(obs[0]), int(obs[1])
 
         # Determine inventory offset
-        # Full mode: [px, py, <inv 4>, <tiles 256>]
+        # Full mode: [px, py, <inv 4>, <tiles 256>, <path 256 (optional)>]
         obs_len = len(obs)
-        if obs_len >= 2 + 4 + 256:
-            # With inventory: [px, py, key_gray, key_yellow, key_red, remaining_bucket, tiles...]
+        path_grid = np.zeros(256, dtype=np.int16)
+
+        if obs_len >= 2 + 4 + 256 + 256:
+            # With inventory + path trace
+            inv = obs[2:6]
+            tiles = obs[6:6 + 256]
+            path_grid = obs[6 + 256 : 6 + 512]
+        elif obs_len >= 2 + 256 + 256:
+            # Without inventory + path trace
+            inv = np.zeros(4, dtype=np.int16)
+            tiles = obs[2:2 + 256]
+            path_grid = obs[2 + 256 : 2 + 512]
+        elif obs_len >= 2 + 4 + 256:
+            # With inventory (no path)
             inv = obs[2:6]
             tiles = obs[6:6 + 256]
         elif obs_len >= 2 + 256:
-            # Without inventory: [px, py, tiles...]
+            # Without inventory (no path)
             inv = np.zeros(4, dtype=np.int16)
             tiles = obs[2:2 + 256]
         else:
@@ -129,6 +141,9 @@ class ObservationPreprocessor:
         # Encode as a spatial pattern: top-left quadrant = keys, bottom-right = remaining
         channels[9, 0:8, 0:8] = key_gray * 0.33 + key_yellow * 0.33 + key_red * 0.34
         channels[9, 8:16, 8:16] = remaining
+
+        # Channel 12: Path Trace History
+        channels[12, :, :] = path_grid.reshape((16, 16)).astype(np.float32)
 
         return torch.from_numpy(channels).to(self.device)
 

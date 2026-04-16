@@ -612,10 +612,15 @@ class BobbyCarrotEnv:
 
         if self.observation_mode == "full":
             tiles = np.array(self.map_info.data, dtype=np.int16)
+            
+            path_grid = np.zeros(256, dtype=np.int16)
+            for p_coord in self.recent_positions:
+                path_grid[p_coord[0] + p_coord[1] * 16] = 1
+
             if self.include_inventory:
                 inv = self._compressed_inventory()
-                return np.concatenate([np.array(base + inv, dtype=np.int16), tiles])
-            return np.concatenate([np.array(base, dtype=np.int16), tiles])
+                return np.concatenate([np.array(base + inv, dtype=np.int16), tiles, path_grid])
+            return np.concatenate([np.array(base, dtype=np.int16), tiles, path_grid])
 
         half = self.local_view_size // 2
         local = []
