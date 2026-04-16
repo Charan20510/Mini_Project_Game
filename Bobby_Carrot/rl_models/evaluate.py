@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 
 import numpy as np
 import torch
@@ -43,7 +43,7 @@ def evaluate_agent(
     device_str: str = "auto",
     render: bool = False,
     render_fps: float = 4.0,
-) -> Dict[str, object]:
+) -> Dict[str, Any]:
     """Evaluate a trained agent across multiple levels.
 
     Returns a dict with per-level and aggregate metrics.
