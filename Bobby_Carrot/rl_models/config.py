@@ -12,12 +12,10 @@ class LevelConfig:
     """Defines which levels are used for training and testing."""
 
     train_levels: List[Tuple[str, int]] = field(default_factory=lambda: (
-        [("normal", i) for i in range(1, 26)]
-        + [("egg", i) for i in range(1, 16)]
+        [("normal", i) for i in range(1, 8)]   # normal 1-7
     ))
     test_levels: List[Tuple[str, int]] = field(default_factory=lambda: (
-        [("normal", i) for i in range(26, 31)]
-        + [("egg", i) for i in range(16, 21)]
+        [("normal", i) for i in range(8, 11)]  # normal 8-10
     ))
 
 
@@ -31,23 +29,23 @@ class TrainingConfig:
     checkpoint_dir: Path = Path("checkpoints")
     checkpoint_every: int = 50_000
     eval_interval: int = 25_000
-    eval_episodes_per_level: int = 5
+    eval_episodes_per_level: int = 10
     log_interval: int = 2_000
     log_dir: Path = Path("logs")
 
     # Curriculum settings
     curriculum: bool = True
-    curriculum_start_levels: int = 5
+    curriculum_start_levels: int = 3      # Start with levels 1-3
     curriculum_promotion_window: int = 100
-    curriculum_promotion_threshold: float = 0.7
-    curriculum_add_levels: int = 3
+    curriculum_promotion_threshold: float = 0.6  # 60% success to promote
+    curriculum_add_levels: int = 2        # Add 2 levels per promotion
 
     # Observation
     observation_mode: str = "full"
     max_steps_per_episode: int = 300
 
     # Multi-env (vectorized)
-    n_envs: int = 4
+    n_envs: int = 1  # Single env for simplicity
 
 
 @dataclass
@@ -59,7 +57,7 @@ class PPOConfig:
     gae_lambda: float = 0.95
     clip_ratio: float = 0.2
     value_coeff: float = 0.5
-    entropy_coeff: float = 0.01
+    entropy_coeff: float = 0.02  # Higher entropy for exploration on complex levels
     max_grad_norm: float = 0.5
     rollout_length: int = 256
     n_epochs: int = 4
@@ -114,7 +112,7 @@ class RainbowConfig:
 class ICMConfig:
     """Intrinsic Curiosity Module hyperparameters."""
 
-    enabled: bool = False
+    enabled: bool = True   # Enabled by default for crumble-heavy levels
     lr: float = 1e-3
     feature_dim: int = 128
     intrinsic_reward_scale: float = 0.01

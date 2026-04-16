@@ -22,15 +22,15 @@ class RolloutBuffer:
     """Fixed-size buffer for on-policy rollout collection.
 
     Stores transitions and computes GAE advantages + discounted returns
-    after the rollout is complete.
+    after the rollout is complete. Also stores action masks for PPO updates.
     """
 
-    def __init__(self, rollout_length: int, obs_dim: int, gamma: float, gae_lambda: float) -> None:
+    def __init__(self, rollout_length: int, obs_dim: int, n_actions: int, gamma: float, gae_lambda: float) -> None:
         self.rollout_length = rollout_length
         self.gamma = gamma
         self.gae_lambda = gae_lambda
 
-        self.observations = np.zeros((rollout_length, obs_dim), dtype=np.float32)
+        self.observations = np.zeros((rollout_length, obs_dim), dtype=np.int16)
         self.actions = np.zeros(rollout_length, dtype=np.int64)
         self.rewards = np.zeros(rollout_length, dtype=np.float32)
         self.dones = np.zeros(rollout_length, dtype=np.float32)
@@ -38,6 +38,7 @@ class RolloutBuffer:
         self.values = np.zeros(rollout_length, dtype=np.float32)
         self.advantages = np.zeros(rollout_length, dtype=np.float32)
         self.returns = np.zeros(rollout_length, dtype=np.float32)
+        self.action_masks = np.ones((rollout_length, n_actions), dtype=np.bool_)
 
         self.ptr = 0
         self.full = False
@@ -50,6 +51,7 @@ class RolloutBuffer:
         done: bool,
         log_prob: float,
         value: float,
+        action_mask: np.ndarray | None = None,
     ) -> None:
         self.observations[self.ptr] = obs
         self.actions[self.ptr] = action
@@ -57,6 +59,8 @@ class RolloutBuffer:
         self.dones[self.ptr] = float(done)
         self.log_probs[self.ptr] = log_prob
         self.values[self.ptr] = value
+        if action_mask is not None:
+            self.action_masks[self.ptr] = action_mask
         self.ptr += 1
         if self.ptr >= self.rollout_length:
             self.full = True
@@ -93,6 +97,7 @@ class RolloutBuffer:
                 "advantages": self.advantages[batch_idx],
                 "returns": self.returns[batch_idx],
                 "values": self.values[batch_idx],
+                "action_masks": self.action_masks[batch_idx],
             }
 
     def reset(self) -> None:

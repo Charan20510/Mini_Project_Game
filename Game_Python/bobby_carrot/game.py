@@ -11,7 +11,20 @@ try:
     from pygame import Surface, Rect
 except ImportError:  # pygame not available
     pygame = None
-    Surface = Rect = None
+    Surface = None
+
+    class Rect:
+        """Minimal fallback when pygame is not installed (headless training)."""
+        __slots__ = ("x", "y", "w", "h")
+
+        def __init__(self, x: int = 0, y: int = 0, w: int = 0, h: int = 0):
+            self.x = x
+            self.y = y
+            self.w = w
+            self.h = h
+
+        def move(self, dx: int, dy: int) -> "Rect":
+            return Rect(self.x + dx, self.y + dy, self.w, self.h)
 from enum import Enum
 
 # --- constants ---

@@ -39,7 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Algorithm selection
     p.add_argument("--algo", type=str, default="ppo", choices=["ppo", "rainbow"],
                    help="Algorithm to train")
-    p.add_argument("--icm", action="store_true", help="Enable ICM curiosity module")
+    p.add_argument("--icm", action="store_true", default=True, help="Enable ICM curiosity module")
+    p.add_argument("--no-icm", action="store_false", dest="icm", help="Disable ICM curiosity module")
 
     # Training config
     p.add_argument("--timesteps", type=int, default=500_000, help="Total training timesteps")
@@ -89,18 +90,18 @@ def build_parser() -> argparse.ArgumentParser:
     icm_group.add_argument("--icm-feature-dim", type=int, default=128, help="ICM feature dimension")
 
     # Level config
-    p.add_argument("--train-normal-max", type=int, default=25,
+    p.add_argument("--train-normal-max", type=int, default=7,
                    help="Train on normal levels 1..N")
-    p.add_argument("--train-egg-max", type=int, default=15,
-                   help="Train on egg levels 1..N")
-    p.add_argument("--test-normal-start", type=int, default=26,
+    p.add_argument("--train-egg-max", type=int, default=0,
+                   help="Train on egg levels 1..N (0 to disable)")
+    p.add_argument("--test-normal-start", type=int, default=8,
                    help="Test normal levels start")
-    p.add_argument("--test-normal-end", type=int, default=30,
+    p.add_argument("--test-normal-end", type=int, default=10,
                    help="Test normal levels end")
-    p.add_argument("--test-egg-start", type=int, default=16,
-                   help="Test egg levels start")
-    p.add_argument("--test-egg-end", type=int, default=20,
-                   help="Test egg levels end")
+    p.add_argument("--test-egg-start", type=int, default=0,
+                   help="Test egg levels start (0 to disable)")
+    p.add_argument("--test-egg-end", type=int, default=0,
+                   help="Test egg levels end (0 to disable)")
 
     return p
 
@@ -110,15 +111,19 @@ def main() -> None:
     args = parser.parse_args()
 
     # Build configs from CLI args
+    train_levels = [("normal", i) for i in range(1, args.train_normal_max + 1)]
+    if args.train_egg_max > 0:
+        train_levels += [("egg", i) for i in range(1, args.train_egg_max + 1)]
+
+    test_levels = []
+    if args.test_normal_start > 0 and args.test_normal_end >= args.test_normal_start:
+        test_levels += [("normal", i) for i in range(args.test_normal_start, args.test_normal_end + 1)]
+    if args.test_egg_start > 0 and args.test_egg_end >= args.test_egg_start:
+        test_levels += [("egg", i) for i in range(args.test_egg_start, args.test_egg_end + 1)]
+
     level_config = LevelConfig(
-        train_levels=(
-            [("normal", i) for i in range(1, args.train_normal_max + 1)]
-            + [("egg", i) for i in range(1, args.train_egg_max + 1)]
-        ),
-        test_levels=(
-            [("normal", i) for i in range(args.test_normal_start, args.test_normal_end + 1)]
-            + [("egg", i) for i in range(args.test_egg_start, args.test_egg_end + 1)]
-        ),
+        train_levels=train_levels,
+        test_levels=test_levels,
     )
 
     train_config = TrainingConfig(

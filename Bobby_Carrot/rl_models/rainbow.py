@@ -459,6 +459,7 @@ def _run_rainbow_eval(
             obs_raw = env.reset()
             done = False
             ep_reward = 0.0
+            info = {}
             while not done:
                 obs_t = preprocessor(obs_raw)
                 with torch.no_grad():

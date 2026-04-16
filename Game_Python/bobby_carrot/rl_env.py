@@ -437,6 +437,115 @@ class BobbyCarrotEnv:
             self._render_assets = None
             self._render_start_ticks = None
 
+    def get_valid_actions(self) -> np.ndarray:
+        """Return a boolean mask of shape (4,) indicating which actions are valid.
+
+        An action is valid if it would result in Bobby actually moving
+        (i.e. the destination changes). This mirrors the collision logic
+        in Bobby.update_dest() without modifying any game state.
+        """
+        assert self.bobby is not None
+        assert self.map_info is not None
+
+        mask = np.zeros(4, dtype=np.bool_)
+
+        # If Bobby is still walking, all actions are technically "queued"
+        # (next_state). Treat all as valid in that case.
+        if self.bobby.is_walking():
+            mask[:] = True
+            return mask
+
+        for action_id in range(4):
+            state = ACTION_TO_STATE[action_id]
+            coord = self.bobby.coord_dest
+
+            # Compute tentative destination
+            if state == State.Left and coord[0] > 0:
+                new_coord = (coord[0] - 1, coord[1])
+            elif state == State.Right and coord[0] < 15:
+                new_coord = (coord[0] + 1, coord[1])
+            elif state == State.Up and coord[1] > 0:
+                new_coord = (coord[0], coord[1] - 1)
+            elif state == State.Down and coord[1] < 15:
+                new_coord = (coord[0], coord[1] + 1)
+            else:
+                # Off-grid
+                continue
+
+            old_pos = coord[0] + coord[1] * 16
+            new_pos = new_coord[0] + new_coord[1] * 16
+            old_item = self.map_info.data[old_pos]
+            new_item = self.map_info.data[new_pos]
+
+            forbid = False
+
+            # Wall / impassable
+            if new_item < 18:
+                forbid = True
+            # Locked doors without keys
+            if new_item == 33 and self.bobby.key_gray == 0:
+                forbid = True
+            if new_item == 35 and self.bobby.key_yellow == 0:
+                forbid = True
+            if new_item == 37 and self.bobby.key_red == 0:
+                forbid = True
+            # Collected egg (death tile)
+            if new_item == 46:
+                forbid = True
+            # Arrow tile entry restrictions (destination)
+            if new_item == 24 and state in {State.Right, State.Down}:
+                forbid = True
+            if new_item == 25 and state in {State.Left, State.Down}:
+                forbid = True
+            if new_item == 26 and state in {State.Left, State.Up}:
+                forbid = True
+            if new_item == 27 and state in {State.Right, State.Up}:
+                forbid = True
+            # Conveyor entry restrictions (destination)
+            if new_item in {28, 40, 41} and state in {State.Up, State.Down}:
+                forbid = True
+            if new_item in {29, 42, 43} and state in {State.Left, State.Right}:
+                forbid = True
+            if new_item == 40 and state == State.Right:
+                forbid = True
+            if new_item == 41 and state == State.Left:
+                forbid = True
+            if new_item == 42 and state == State.Down:
+                forbid = True
+            if new_item == 43 and state == State.Up:
+                forbid = True
+            # Arrow tile exit restrictions (source)
+            if old_item == 24 and state in {State.Left, State.Up}:
+                forbid = True
+            if old_item == 25 and state in {State.Right, State.Up}:
+                forbid = True
+            if old_item == 26 and state in {State.Right, State.Down}:
+                forbid = True
+            if old_item == 27 and state in {State.Left, State.Down}:
+                forbid = True
+            # Conveyor exit restrictions (source)
+            if old_item in {28, 40, 41} and state in {State.Up, State.Down}:
+                forbid = True
+            if old_item in {29, 42, 43} and state in {State.Left, State.Right}:
+                forbid = True
+            if old_item == 40 and state == State.Right:
+                forbid = True
+            if old_item == 41 and state == State.Left:
+                forbid = True
+            if old_item == 42 and state == State.Down:
+                forbid = True
+            if old_item == 43 and state == State.Up:
+                forbid = True
+
+            if not forbid:
+                mask[action_id] = True
+
+        # If no action is valid (rare edge case), allow all to prevent crash
+        if not mask.any():
+            mask[:] = True
+
+        return mask
+
     def _apply_action(self, action: int) -> bool:
         assert self.bobby is not None
         assert self.map_info is not None

@@ -110,13 +110,17 @@ def evaluate_agent(
             done = False
             ep_reward = 0.0
             ep_steps = 0
+            info = {}
 
             while not done:
                 obs_t = preprocessor(obs_raw)
+                # Use action masking for consistent eval
+                mask_np = env.get_valid_actions()
+                mask_t = torch.tensor(mask_np, dtype=torch.bool, device=device)
                 with torch.no_grad():
                     if algo == "ppo":
                         features = agent.encoder(obs_t.unsqueeze(0))
-                        dist = agent.policy(features)
+                        dist = agent.policy(features, action_mask=mask_t.unsqueeze(0))
                         action = int(dist.probs.argmax(dim=-1).item())
                     else:  # rainbow
                         q = agent.q_values(obs_t.unsqueeze(0))

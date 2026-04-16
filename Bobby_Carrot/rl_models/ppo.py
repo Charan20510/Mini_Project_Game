@@ -4,6 +4,7 @@ Implements:
 - Shared CNN encoder → Policy head + Value head
 - Clipped surrogate objective with entropy bonus
 - GAE (Generalised Advantage Estimation)
+- Action masking (invalid actions get -inf logits)
 - Multi-level curriculum training
 - Optional ICM integration
 """
@@ -31,7 +32,7 @@ from .buffers import RolloutBuffer
 # ---------------------------------------------------------------------------
 
 class PPOAgent(nn.Module):
-    """PPO actor-critic agent with shared CNN backbone."""
+    """PPO actor-critic agent with shared CNN backbone and action masking."""
 
     def __init__(self, config: PPOConfig, n_actions: int = 4) -> None:
         super().__init__()
@@ -52,14 +53,19 @@ class PPOAgent(nn.Module):
 
     @torch.no_grad()
     def select_action(
-        self, obs: torch.Tensor
+        self,
+        obs: torch.Tensor,
+        action_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[int, float, float]:
-        """Select action for a single observation.
+        """Select action for a single observation with optional masking.
 
         Returns: (action, log_prob, value)
         """
         features = self.encoder(obs.unsqueeze(0))
-        dist = self.policy(features)
+
+        # Pass mask to policy head (will be None if no masking)
+        mask = action_mask.unsqueeze(0) if action_mask is not None else None
+        dist = self.policy(features, action_mask=mask)
         value = self.value(features)
 
         action = dist.sample()
@@ -68,14 +74,17 @@ class PPOAgent(nn.Module):
         return int(action.item()), float(log_prob.item()), float(value.item())
 
     def evaluate_actions(
-        self, obs: torch.Tensor, actions: torch.Tensor
+        self,
+        obs: torch.Tensor,
+        actions: torch.Tensor,
+        action_masks: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Evaluate actions for a batch of observations.
 
         Returns: (log_probs, values, entropy)
         """
         features = self.encoder(obs)
-        dist = self.policy(features)
+        dist = self.policy(features, action_mask=action_masks)
         values = self.value(features)
 
         log_probs = dist.log_prob(actions)
@@ -94,7 +103,7 @@ def train_ppo(
     level_config: LevelConfig,
     icm_config: Optional[ICMConfig] = None,
 ) -> PPOAgent:
-    """Full PPO training with curriculum learning and optional ICM.
+    """Full PPO training with curriculum learning, action masking, and optional ICM.
 
     Returns the trained PPOAgent.
     """
@@ -128,11 +137,12 @@ def train_ppo(
         from .icm import ICMModule
         icm_module = ICMModule(icm_config, ppo_config.hidden_dim).to(device)
         icm_optimizer = optim.Adam(icm_module.parameters(), lr=icm_config.lr)
+        print(f"[PPO] ICM enabled (scale={icm_config.intrinsic_reward_scale})")
 
     # Curriculum
     all_train_levels = list(level_config.train_levels)
     if train_config.curriculum:
-        active_levels = all_train_levels[:train_config.curriculum_start_levels]
+        active_levels = all_train_levels[:min(train_config.curriculum_start_levels, len(all_train_levels))]
     else:
         active_levels = all_train_levels
 
@@ -151,10 +161,11 @@ def train_ppo(
     dummy_obs = env.reset()
     obs_dim = len(dummy_obs)
 
-    # Rollout buffer
+    # Rollout buffer (stores raw int16 obs + action masks)
     rollout = RolloutBuffer(
         rollout_length=ppo_config.rollout_length,
         obs_dim=obs_dim,
+        n_actions=agent.n_actions,
         gamma=ppo_config.gamma,
         gae_lambda=ppo_config.gae_lambda,
     )
@@ -176,6 +187,8 @@ def train_ppo(
     # Training state
     obs_raw = env.reset()
     obs_tensor = preprocessor(obs_raw)
+    action_mask_np = env.get_valid_actions()
+    action_mask_tensor = torch.tensor(action_mask_np, dtype=torch.bool, device=device)
     done = False
     total_timesteps = 0
     episode_count = 0
@@ -183,10 +196,12 @@ def train_ppo(
     episode_rewards: List[float] = []
     episode_successes: List[float] = []
     curriculum_window: List[float] = []
+    best_avg_success = 0.0
     start_time = time.time()
 
     print(f"[PPO] Starting training for {train_config.total_timesteps} timesteps")
     print(f"[PPO] Active levels: {len(active_levels)} / {len(all_train_levels)}")
+    print(f"[PPO] Observation dim: {obs_dim} | Channels: {preprocessor.num_channels()}")
 
     while total_timesteps < train_config.total_timesteps:
         # ── Collect rollout ───────────────────────────────────
@@ -194,7 +209,7 @@ def train_ppo(
         agent.eval()
 
         for _step in range(ppo_config.rollout_length):
-            action, log_prob, value = agent.select_action(obs_tensor)
+            action, log_prob, value = agent.select_action(obs_tensor, action_mask_tensor)
 
             next_obs_raw, reward, done, info = env.step(action)
 
@@ -210,7 +225,11 @@ def train_ppo(
                 )
                 reward += icm_config.intrinsic_reward_scale * intrinsic
 
-            rollout.add(obs_raw.astype(np.float32), action, reward, done, log_prob, value)
+            # Store in rollout (raw int16 obs for correct preprocessing later)
+            rollout.add(
+                obs_raw.astype(np.int16), action, reward, done,
+                log_prob, value, action_mask_np,
+            )
             episode_reward += reward
             total_timesteps += 1
 
@@ -229,9 +248,13 @@ def train_ppo(
                 env.set_map(map_kind=current_level[0], map_number=current_level[1])
                 obs_raw = env.reset()
                 obs_tensor = preprocessor(obs_raw)
+                action_mask_np = env.get_valid_actions()
+                action_mask_tensor = torch.tensor(action_mask_np, dtype=torch.bool, device=device)
             else:
                 obs_raw = next_obs_raw
                 obs_tensor = preprocessor(obs_raw)
+                action_mask_np = env.get_valid_actions()
+                action_mask_tensor = torch.tensor(action_mask_np, dtype=torch.bool, device=device)
 
         # ── Compute GAE ───────────────────────────────────────
         with torch.no_grad():
@@ -252,16 +275,19 @@ def train_ppo(
         for _epoch in range(ppo_config.n_epochs):
             for batch in rollout.get_batches(ppo_config.minibatch_size):
                 b_obs_raw = batch["observations"]
-                b_obs = preprocessor.process_numpy_batch(b_obs_raw)
+                b_obs = preprocessor.process_numpy_batch(b_obs_raw.astype(np.int16))
                 b_actions = torch.tensor(batch["actions"], dtype=torch.long, device=device)
                 b_old_log_probs = torch.tensor(batch["log_probs"], dtype=torch.float32, device=device)
                 b_advantages = torch.tensor(batch["advantages"], dtype=torch.float32, device=device)
                 b_returns = torch.tensor(batch["returns"], dtype=torch.float32, device=device)
+                b_action_masks = torch.tensor(batch["action_masks"], dtype=torch.bool, device=device)
 
                 if ppo_config.normalize_advantages and b_advantages.numel() > 1:
                     b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
 
-                log_probs, values, entropy = agent.evaluate_actions(b_obs, b_actions)
+                log_probs, values, entropy = agent.evaluate_actions(
+                    b_obs, b_actions, action_masks=b_action_masks,
+                )
 
                 # Clipped surrogate
                 ratio = (log_probs - b_old_log_probs).exp()
@@ -291,13 +317,14 @@ def train_ppo(
                     enc_obs = agent.encoder(b_obs).detach()
                     # Need next obs — approximate: shift by 1 within batch
                     # For proper ICM, we'd store next_obs in rollout; using detached encoder
-                    icm_loss = icm_module.compute_loss(
-                        enc_obs[:-1], enc_obs[1:],
-                        b_actions[:-1],
-                    )
-                    icm_optimizer.zero_grad()
-                    icm_loss.backward()
-                    icm_optimizer.step()
+                    if enc_obs.size(0) > 1:
+                        icm_loss = icm_module.compute_loss(
+                            enc_obs[:-1], enc_obs[1:],
+                            b_actions[:-1],
+                        )
+                        icm_optimizer.zero_grad()
+                        icm_loss.backward()
+                        icm_optimizer.step()
 
                 # Track metrics
                 with torch.no_grad():
@@ -364,6 +391,19 @@ def train_ppo(
                 },
             }, ckpt_path)
 
+            # Save best model
+            recent_success = float(np.mean(episode_successes[-100:])) if len(episode_successes) >= 10 else 0.0
+            if recent_success > best_avg_success:
+                best_avg_success = recent_success
+                best_path = ckpt_dir / "ppo_best.pt"
+                torch.save({
+                    "agent_state_dict": agent.state_dict(),
+                    "total_timesteps": total_timesteps,
+                    "episode_count": episode_count,
+                    "best_success": best_avg_success,
+                }, best_path)
+                print(f"[PPO] New best model saved (success={best_avg_success:.2%})")
+
         # ── Periodic Evaluation ───────────────────────────────
         if total_timesteps % train_config.eval_interval < ppo_config.rollout_length:
             _run_eval(
@@ -409,6 +449,7 @@ def _run_eval(
     total_success = 0
     total_episodes = 0
     total_reward = 0.0
+    level_results: List[str] = []
 
     for kind, num in test_levels:
         env = BobbyCarrotEnv(
@@ -417,6 +458,7 @@ def _run_eval(
             include_inventory=True, headless=True,
             max_steps=train_config.max_steps_per_episode,
         )
+        level_successes = 0
         for _ in range(train_config.eval_episodes_per_level):
             obs_raw = env.reset()
             done = False
@@ -424,22 +466,28 @@ def _run_eval(
             info: Dict[str, object] = {}
             while not done:
                 obs_t = preprocessor(obs_raw)
+                # Get action mask for eval too
+                mask_np = env.get_valid_actions()
+                mask_t = torch.tensor(mask_np, dtype=torch.bool, device=device)
                 with torch.no_grad():
                     features = agent.encoder(obs_t.unsqueeze(0))
-                    dist = agent.policy(features)
+                    dist = agent.policy(features, action_mask=mask_t.unsqueeze(0))
                     action = int(dist.probs.argmax(dim=-1).item())
                 obs_raw, reward, done, info = env.step(action)
                 ep_reward += reward
             total_reward += ep_reward
             if info.get("level_completed", False):
                 total_success += 1
+                level_successes += 1
             total_episodes += 1
         env.close()
+        level_results.append(f"{kind}-{num}:{level_successes}/{train_config.eval_episodes_per_level}")
 
     avg_success = total_success / max(1, total_episodes)
     avg_reward = total_reward / max(1, total_episodes)
     print(
         f"[PPO-EVAL] t={timestep} | test_success={avg_success:.2%} "
-        f"| test_reward={avg_reward:.2f} | episodes={total_episodes}"
+        f"| test_reward={avg_reward:.2f} | episodes={total_episodes} "
+        f"| {', '.join(level_results)}"
     )
     return {"success_rate": avg_success, "avg_reward": avg_reward}

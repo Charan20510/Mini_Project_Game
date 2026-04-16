@@ -3,7 +3,7 @@
 Includes:
 - ObservationPreprocessor: converts raw env observations to multi-channel tensors
 - CNNEncoder: shared convolutional backbone
-- PolicyHead / ValueHead: for PPO
+- PolicyHead / ValueHead: for PPO (with action masking support)
 - NoisyLinear: factorised Gaussian noise layer for NoisyNet
 - DuelingDistributionalHead: combined Dueling + C51 head for Rainbow
 """
@@ -11,7 +11,7 @@ Includes:
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -24,13 +24,13 @@ import torch.nn.functional as F
 # ---------------------------------------------------------------------------
 
 # Tile category mapping (must match rl_env.py tile IDs)
-_NUM_OBS_CHANNELS = 10
+_NUM_OBS_CHANNELS = 12  # Expanded from 10 to 12
 
 
 class ObservationPreprocessor:
     """Converts raw 16x16 tile-grid observations into multi-channel float tensors.
 
-    Channel layout (10 channels total):
+    Channel layout (12 channels total):
         0: Walkable ground  (tile >= 18)
         1: Carrot            (tile == 19)
         2: Egg               (tile == 45)
@@ -41,6 +41,8 @@ class ObservationPreprocessor:
         7: Door locked       (tile in {33, 35, 37})
         8: Agent position    (1 at agent pos)
         9: Inventory info    (remaining targets normalised + key flags)
+       10: Switch/conveyor   (tiles 22-29, 38-43) — mechanically important
+       11: Collected/used    (tile == 20 [collected carrot] or 46 [collected egg])
     """
 
     def __init__(self, device: torch.device) -> None:
@@ -63,8 +65,7 @@ class ObservationPreprocessor:
         px, py = int(obs[0]), int(obs[1])
 
         # Determine inventory offset
-        # Full mode: [px, py, <tiles 256>] or [px, py, inv..., <tiles 256>]
-        # We handle both cases
+        # Full mode: [px, py, <inv 4>, <tiles 256>]
         obs_len = len(obs)
         if obs_len >= 2 + 4 + 256:
             # With inventory: [px, py, key_gray, key_yellow, key_red, remaining_bucket, tiles...]
@@ -78,10 +79,7 @@ class ObservationPreprocessor:
             # Local/compact mode — create a blank 16×16 and fill what we can
             inv = np.zeros(4, dtype=np.int16)
             tiles = np.zeros(256, dtype=np.int16)
-            # For local observations, we embed available tile data at agent pos
             remaining = obs[2:] if obs_len > 2 else np.array([], dtype=np.int16)
-            # We'll still set agent position channel — the local tiles are partial
-            # so the CNN must handle sparse input
             local_size = int(math.isqrt(len(remaining))) if len(remaining) > 0 else 0
             if local_size > 0:
                 half = local_size // 2
@@ -112,6 +110,12 @@ class ObservationPreprocessor:
                     channels[6, y, x] = 1.0
                 if tile in (33, 35, 37):
                     channels[7, y, x] = 1.0
+                # Channel 10: Switch/conveyor tiles
+                if tile in (22, 23, 24, 25, 26, 27, 28, 29, 38, 39, 40, 41, 42, 43):
+                    channels[10, y, x] = 1.0
+                # Channel 11: Collected/used tiles (history indicator)
+                if tile == 20 or tile == 46:
+                    channels[11, y, x] = 1.0
 
         # Agent position channel
         if 0 <= px < 16 and 0 <= py < 16:
@@ -199,14 +203,28 @@ class CNNEncoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 class PolicyHead(nn.Module):
-    """Categorical policy head for discrete action space."""
+    """Categorical policy head for discrete action space with action masking."""
 
     def __init__(self, input_dim: int, n_actions: int = 4) -> None:
         super().__init__()
         self.linear = nn.Linear(input_dim, n_actions)
 
-    def forward(self, features: torch.Tensor) -> torch.distributions.Categorical:
+    def forward(
+        self,
+        features: torch.Tensor,
+        action_mask: Optional[torch.Tensor] = None,
+    ) -> torch.distributions.Categorical:
+        """Compute action distribution, optionally masking invalid actions.
+
+        Args:
+            features: (B, input_dim) encoder output.
+            action_mask: (B, n_actions) bool tensor. True = valid, False = masked.
+                         If None, all actions are considered valid.
+        """
         logits = self.linear(features)
+        if action_mask is not None:
+            # Set logits of invalid actions to -inf so they get 0 probability
+            logits = logits.masked_fill(~action_mask.bool(), float('-inf'))
         return torch.distributions.Categorical(logits=logits)
 
 
