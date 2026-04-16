@@ -149,11 +149,16 @@ class ObservationPreprocessor:
 class CNNEncoder(nn.Module):
     """Shared CNN backbone for processing 16x16 multi-channel grid observations.
 
-    Architecture:
-        Conv2d(in, 32, 3, pad=1) → BN → ReLU
-        Conv2d(32, 64, 3, pad=1) → BN → ReLU
-        Conv2d(64, 64, 3, stride=2) → BN → ReLU
-        Flatten → Linear(64*7*7, hidden_dim)  → ReLU
+    Architecture (uses GroupNorm instead of BatchNorm for RL stability):
+        Conv2d(in, 32, 3, pad=1) → GN → ReLU
+        Conv2d(32, 64, 3, pad=1) → GN → ReLU
+        Conv2d(64, 64, 3, pad=1) → GN → ReLU
+        Conv2d(64, 64, 3, stride=2) → GN → ReLU
+        Flatten → Linear → ReLU → Linear → ReLU
+
+    Note: GroupNorm(1, C) is equivalent to LayerNorm and normalizes
+    per-sample. BatchNorm is harmful in RL because running statistics
+    get corrupted across different levels/episodes.
     """
 
     def __init__(
@@ -164,7 +169,7 @@ class CNNEncoder(nn.Module):
     ) -> None:
         super().__init__()
         if channel_sizes is None:
-            channel_sizes = [32, 64, 64]
+            channel_sizes = [32, 64, 64, 64]
 
         layers: list[nn.Module] = []
         prev_ch = in_channels
@@ -172,7 +177,7 @@ class CNNEncoder(nn.Module):
             stride = 2 if i == len(channel_sizes) - 1 else 1
             layers.extend([
                 nn.Conv2d(prev_ch, ch, kernel_size=3, stride=stride, padding=1),
-                nn.BatchNorm2d(ch),
+                nn.GroupNorm(1, ch),  # Per-sample norm (LayerNorm equivalent)
                 nn.ReLU(inplace=True),
             ])
             prev_ch = ch
@@ -187,6 +192,8 @@ class CNNEncoder(nn.Module):
 
         self.fc = nn.Sequential(
             nn.Linear(self._conv_flat_size, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(inplace=True),
         )
         self.output_dim = hidden_dim

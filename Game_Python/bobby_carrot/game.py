@@ -707,7 +707,7 @@ def main():
                     src = Rect(32 * (item % 8), 32 * (item // 8), 32, 32)
                 dest = Rect(x * 32 - cam_x, y * 32 - cam_y, 32, 32)
                 if texture is not None:
-                    screen.blit(texture, dest, src)
+                    screen.blit(texture, dest, src)  # type: ignore[arg-type]
 
         # bobby
         bobby_src, bobby_dest = bobby.update_texture_position(frame, map_info.data)
@@ -724,7 +724,7 @@ def main():
         # adjust destination by camera
         bobby_dest = bobby_dest.move(-cam_x, -cam_y)
         if bobby_tex is not None:
-            screen.blit(bobby_tex, bobby_dest, bobby_src)
+            screen.blit(bobby_tex, bobby_dest, bobby_src)  # type: ignore[arg-type]
 
         # HUD indicator
         if map_info.carrot_total > 0:
@@ -737,18 +737,18 @@ def main():
             icon_width = 34
         if assetsurfs.hud is not None:
             screen.blit(assetsurfs.hud, (32 * 16 - (icon_width + 4) - x_right_offset,
-                                          4 + y_offset), icon_rect)
+                                          4 + y_offset), icon_rect)  # type: ignore[arg-type]
         if assetsurfs.numbers is not None:
             num_10 = num_left // 10
             num_01 = num_left % 10
             screen.blit(assetsurfs.numbers,
                         (32 * 16 - (icon_width + 4) - 2 - 12 - x_right_offset,
                          4 + 14 + y_offset),
-                        Rect(num_01 * 12, 0, 12, 18))
+                        Rect(num_01 * 12, 0, 12, 18))  # type: ignore[arg-type]
             screen.blit(assetsurfs.numbers,
                         (32 * 16 - (icon_width + 4) - 2 - 12 * 2 - 1 - x_right_offset,
                          4 + 14 + y_offset),
-                        Rect(num_10 * 12, 0, 12, 18))
+                        Rect(num_10 * 12, 0, 12, 18))  # type: ignore[arg-type]
         # keys
         keys = []
         for _ in range(bobby.key_gray):
@@ -762,7 +762,7 @@ def main():
                 screen.blit(assetsurfs.hud,
                             (32 * 16 - (22 + 4) - count * 22 - x_right_offset,
                              4 + 44 + 2 + y_offset),
-                            Rect(offset, 0, 22, 44))
+                            Rect(offset, 0, 22, 44))  # type: ignore[arg-type]
         # time passed
         passed_secs = (now_ms - bobby.start_time) // 1000
         minutes = passed_secs // 60
@@ -775,7 +775,7 @@ def main():
                                            seconds // 10, seconds % 10]):
                 screen.blit(assetsurfs.numbers,
                             (4 + 12 * idx + x_offset, 4 + y_offset),
-                            Rect(offset * 12, 0, 12, 18))
+                            Rect(offset * 12, 0, 12, 18))  # type: ignore[arg-type]
         # help page
         if show_help:
             s = pygame.Surface((158, 160), pygame.SRCALPHA)
@@ -786,7 +786,7 @@ def main():
                 screen.blit(assetsurfs.help,
                             ((32 * 16 - cam_x - x_right_offset - 133) // 2 + cam_x,
                              32 * 3 + y_offset),
-                            Rect(0, 0, 133, 142))
+                            Rect(0, 0, 133, 142))  # type: ignore[arg-type]
 
         pygame.display.flip()
         frame += 1

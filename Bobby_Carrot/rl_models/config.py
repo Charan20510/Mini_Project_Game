@@ -65,7 +65,7 @@ class PPOConfig:
     normalize_advantages: bool = True
 
     # Network architecture
-    cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64])
+    cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64, 64])
     hidden_dim: int = 256
 
 
@@ -105,7 +105,7 @@ class RainbowConfig:
     v_max: float = 200.0
 
     # Network architecture
-    cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64])
+    cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64, 64])
 
 
 @dataclass

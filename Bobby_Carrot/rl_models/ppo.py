@@ -102,6 +102,7 @@ def train_ppo(
     train_config: TrainingConfig,
     level_config: LevelConfig,
     icm_config: Optional[ICMConfig] = None,
+    resume_path: Optional[str] = None,
 ) -> PPOAgent:
     """Full PPO training with curriculum learning, action masking, and optional ICM.
 
@@ -127,6 +128,10 @@ def train_ppo(
 
     # Create agent
     agent = PPOAgent(ppo_config).to(device)
+    if resume_path:
+        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        agent.load_state_dict(ckpt['agent_state_dict'])
+        print(f"[PPO] Loaded weights from {resume_path}")
     optimizer = optim.Adam(agent.parameters(), lr=ppo_config.lr, eps=1e-5)
     preprocessor = ObservationPreprocessor(device)
 
@@ -197,6 +202,7 @@ def train_ppo(
     episode_successes: List[float] = []
     curriculum_window: List[float] = []
     best_avg_success = 0.0
+    level_cycle_idx = 0  # Round-robin level index for equal exposure
     start_time = time.time()
 
     print(f"[PPO] Starting training for {train_config.total_timesteps} timesteps")
@@ -243,8 +249,9 @@ def train_ppo(
                 episode_count += 1
                 episode_reward = 0.0
 
-                # Switch to random level from active pool
-                current_level = active_levels[np.random.randint(len(active_levels))]
+                # Round-robin level cycling for equal exposure across all levels
+                level_cycle_idx = (level_cycle_idx + 1) % len(active_levels)
+                current_level = active_levels[level_cycle_idx]
                 env.set_map(map_kind=current_level[0], map_number=current_level[1])
                 obs_raw = env.reset()
                 obs_tensor = preprocessor(obs_raw)

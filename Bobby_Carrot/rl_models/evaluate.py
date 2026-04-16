@@ -59,9 +59,12 @@ def evaluate_agent(
     # Load checkpoint
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Create agent
+    # Create agent with matching config from checkpoint if available
     if algo == "ppo":
-        agent = PPOAgent(PPOConfig()).to(device)
+        saved_config = None
+        if "config" in ckpt and "ppo" in ckpt["config"]:
+            saved_config = ckpt["config"]["ppo"]
+        agent = PPOAgent(saved_config or PPOConfig()).to(device)
         agent.load_state_dict(ckpt["agent_state_dict"])
         agent.eval()
     elif algo == "rainbow":
