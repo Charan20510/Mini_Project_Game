@@ -219,6 +219,9 @@ def train_ppo(
 
             next_obs_raw, reward, done, info = env.step(action)
 
+            # Scale environmental reward to keep Value Head targets constrained
+            reward_scaled = reward * train_config.reward_scale
+
             # ICM intrinsic reward
             if icm_module is not None:
                 next_tensor = preprocessor(next_obs_raw)
@@ -229,14 +232,14 @@ def train_ppo(
                     enc_obs, enc_next,
                     torch.tensor([action], device=device),
                 )
-                reward += icm_config.intrinsic_reward_scale * intrinsic
+                reward_scaled += icm_config.intrinsic_reward_scale * intrinsic
 
-            # Store in rollout (raw int16 obs for correct preprocessing later)
+            # Store in rollout using the scaled reward
             rollout.add(
-                obs_raw.astype(np.int16), action, reward, done,
+                obs_raw.astype(np.int16), action, reward_scaled, done,
                 log_prob, value, action_mask_np,
             )
-            episode_reward += reward
+            episode_reward += reward  # Keep tracking raw, unscaled reward for human logs
             total_timesteps += 1
 
             if done:
@@ -302,8 +305,8 @@ def train_ppo(
                 surr2 = torch.clamp(ratio, 1.0 - ppo_config.clip_ratio, 1.0 + ppo_config.clip_ratio) * b_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Value loss
-                value_loss = nn.functional.mse_loss(values, b_returns)
+                # Value loss (Huber loss prevents exploding gradients)
+                value_loss = nn.functional.huber_loss(values, b_returns)
 
                 # Entropy bonus
                 entropy_loss = -entropy.mean()

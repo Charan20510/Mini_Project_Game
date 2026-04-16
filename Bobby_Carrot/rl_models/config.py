@@ -43,6 +43,7 @@ class TrainingConfig:
     # Observation
     observation_mode: str = "full"
     max_steps_per_episode: int = 300
+    reward_scale: float = 0.1  # Scale raw environment rewards to stabilize value loss
 
     # Multi-env (vectorized)
     n_envs: int = 1  # Single env for simplicity

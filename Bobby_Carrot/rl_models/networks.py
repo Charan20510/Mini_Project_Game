@@ -146,6 +146,14 @@ class ObservationPreprocessor:
 # CNN Encoder (shared backbone)
 # ---------------------------------------------------------------------------
 
+def init_orthogonal(module: nn.Module, gain: float = 1.0) -> None:
+    """Initialize weights orthogonally and biases to zero."""
+    if isinstance(module, (nn.Linear, nn.Conv2d)):
+        nn.init.orthogonal_(module.weight, gain=gain)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+
+
 class CNNEncoder(nn.Module):
     """Shared CNN backbone for processing 16x16 multi-channel grid observations.
 
@@ -198,6 +206,9 @@ class CNNEncoder(nn.Module):
         )
         self.output_dim = hidden_dim
 
+        # Apply orthogonal initialization to all conv/linear layers
+        self.apply(lambda m: init_orthogonal(m, gain=nn.init.calculate_gain('relu')))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass. x shape: (B, C, 16, 16) → (B, hidden_dim)."""
         h = self.conv(x)
@@ -215,6 +226,8 @@ class PolicyHead(nn.Module):
     def __init__(self, input_dim: int, n_actions: int = 4) -> None:
         super().__init__()
         self.linear = nn.Linear(input_dim, n_actions)
+        # Small gain ensures initial policy is uniformly random
+        init_orthogonal(self.linear, gain=0.01)
 
     def forward(
         self,
@@ -241,6 +254,7 @@ class ValueHead(nn.Module):
     def __init__(self, input_dim: int) -> None:
         super().__init__()
         self.linear = nn.Linear(input_dim, 1)
+        init_orthogonal(self.linear, gain=1.0)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.linear(features).squeeze(-1)
