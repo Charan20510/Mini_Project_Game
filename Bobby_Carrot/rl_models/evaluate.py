@@ -43,6 +43,8 @@ def evaluate_agent(
     device_str: str = "auto",
     render: bool = False,
     render_fps: float = 4.0,
+    save_frames: bool = False,
+    frames_dir: str = "frames",
 ) -> Dict[str, Any]:
     """Evaluate a trained agent across multiple levels.
 
@@ -75,6 +77,11 @@ def evaluate_agent(
         raise ValueError(f"Unknown algorithm: {algo}")
 
     preprocessor = ObservationPreprocessor(device)
+
+    # Setup frames directory if saving frames
+    frames_path = Path(frames_dir)
+    if save_frames:
+        frames_path.mkdir(parents=True, exist_ok=True)
 
     # Per-level results
     results: Dict[str, Dict[str, float]] = {}
@@ -115,6 +122,14 @@ def evaluate_agent(
             ep_steps = 0
             info = {}
 
+            if render:
+                env.render()
+                if save_frames:
+                    import pygame
+                    frame_path = frames_path / f"{level_key}_ep{ep+1}_step{ep_steps:04d}.png"
+                    if getattr(env, '_screen', None) is not None:
+                        pygame.image.save(env._screen, str(frame_path))
+
             while not done:
                 obs_t = preprocessor(obs_raw)
                 # Use action masking for consistent eval
@@ -135,6 +150,11 @@ def evaluate_agent(
 
                 if render:
                     env.render()
+                    if save_frames:
+                        import pygame
+                        frame_path = frames_path / f"{level_key}_ep{ep+1}_step{ep_steps:04d}.png"
+                        if getattr(env, '_screen', None) is not None:
+                            pygame.image.save(env._screen, str(frame_path))
                     import time
                     time.sleep(1.0 / render_fps)
 
@@ -210,6 +230,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Render episodes visually")
     p.add_argument("--render-fps", type=float, default=4.0,
                    help="Frames per second for rendering")
+    p.add_argument("--save-frames", action="store_true",
+                   help="Save rendered frames to disk as PNG images")
+    p.add_argument("--frames-dir", type=str, default="frames",
+                   help="Directory to save the rendered frames")
 
     # Level selection
     p.add_argument("--eval-set", type=str, default="test", choices=["test", "train", "all"],
@@ -252,6 +276,8 @@ def main() -> None:
         device_str=args.device,
         render=args.render,
         render_fps=args.render_fps,
+        save_frames=args.save_frames,
+        frames_dir=args.frames_dir,
     )
 
 

@@ -1,0 +1,8 @@
+====================    Capture Game Play By Frames    ===============================
+
+python -m Bobby_Carrot.rl_models.evaluate --algo ppo \
+--checkpoint "Bobby_Carrot\checkpoints_phase1\ppo\ppo_final.pt" \
+--render --render-fps 5.0 --levels normal-3 --save-frames \
+--frames-dir captured_frames
+
+

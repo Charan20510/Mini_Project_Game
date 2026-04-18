@@ -209,44 +209,12 @@ class BobbyCarrotEnv:
 
         self._advance_until_transition()
         after_pos = self.bobby.coord_src
-        now_all_collected = self.bobby.is_finished(self.map_info)
-        dist_after = self._phase_distance(after_pos, now_all_collected)
-
-        moved = before_pos != after_pos
-        if moved and dist_before is not None and dist_after is not None:
-            distance_delta = float(dist_before - dist_after)
-            info["distance_delta"] = distance_delta
-            reward += self.reward_config.distance_delta_scale * distance_delta
-
-        # Grant progress reward only when a genuinely new best distance is reached.
-        if not now_all_collected:
-            if dist_after is not None:
-                if self.best_target_distance is None:
-                    self.best_target_distance = dist_after
-                elif dist_after < self.best_target_distance:
-                    improvement = self.best_target_distance - dist_after
-                    reward += self.reward_config.new_best_target_distance_scale * float(improvement)
-                    self.best_target_distance = dist_after
-        else:
-            if dist_after is not None:
-                if self.best_finish_distance is None:
-                    self.best_finish_distance = dist_after
-                elif dist_after < self.best_finish_distance:
-                    improvement = self.best_finish_distance - dist_after
-                    reward += self.reward_config.new_best_finish_distance_scale * float(improvement)
-                    self.best_finish_distance = dist_after
-
-        if now_all_collected and not self._can_start_finish():
-            reward += self.reward_config.post_collection_step_penalty
-        
-        self.recent_positions.append(after_pos)
-        info["distance_before"] = dist_before
-        info["distance_after"] = dist_after
-        info["all_collected"] = now_all_collected
 
         carrot_delta = self.bobby.carrot_count - before_carrot
         egg_delta = self.bobby.egg_count - before_egg
+        collected_item = carrot_delta > 0 or egg_delta > 0
 
+        # Give item rewards and update target caches BEFORE checking new distances
         if carrot_delta > 0:
             reward += self.reward_config.carrot * carrot_delta
             self._cache_target_positions()
@@ -254,13 +222,57 @@ class BobbyCarrotEnv:
             reward += self.reward_config.egg * egg_delta
             self._cache_target_positions()
 
-        if carrot_delta > 0 or egg_delta > 0:
+        now_all_collected = self.bobby.is_finished(self.map_info)
+        dist_after = self._phase_distance(after_pos, now_all_collected)
+
+        moved = before_pos != after_pos
+        
+        # Only compute distance shaping if we DID NOT just collect an item
+        # because collecting an item shifts the nearest target metric entirely.
+        if moved and not collected_item:
+            if dist_before is not None and dist_after is not None:
+                distance_delta = float(dist_before - dist_after)
+                info["distance_delta"] = distance_delta
+                reward += self.reward_config.distance_delta_scale * distance_delta
+
+            if not now_all_collected:
+                if dist_after is not None:
+                    if self.best_target_distance is None:
+                        self.best_target_distance = dist_after
+                    elif dist_after < self.best_target_distance:
+                        improvement = self.best_target_distance - dist_after
+                        reward += self.reward_config.new_best_target_distance_scale * float(improvement)
+                        self.best_target_distance = dist_after
+            else:
+                if dist_after is not None:
+                    if self.best_finish_distance is None:
+                        self.best_finish_distance = dist_after
+                    elif dist_after < self.best_finish_distance:
+                        improvement = self.best_finish_distance - dist_after
+                        reward += self.reward_config.new_best_finish_distance_scale * float(improvement)
+                        self.best_finish_distance = dist_after
+        elif collected_item:
+            # Re-initialize the 'best distance' metrics since our targets completely changed
+            if not now_all_collected:
+                self.best_target_distance = dist_after
+            else:
+                self.best_finish_distance = dist_after
+
+        if now_all_collected and not self._can_start_finish():
+            reward += self.reward_config.post_collection_step_penalty
+        
+        if now_all_collected and not was_all_collected:
+            reward += self.reward_config.all_collected_bonus
+
+        self.recent_positions.append(after_pos)
+        info["distance_before"] = dist_before
+        info["distance_after"] = dist_after
+        info["all_collected"] = now_all_collected
+
+        if collected_item:
             self.steps_since_progress = 0
         else:
             self.steps_since_progress += 1
-
-        if now_all_collected and not was_all_collected:
-            reward += self.reward_config.all_collected_bonus
 
         if self.steps_since_progress >= self.reward_config.no_progress_penalty_after:
             reward += self.reward_config.no_progress_penalty
