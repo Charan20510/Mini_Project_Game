@@ -24,13 +24,13 @@ import torch.nn.functional as F
 # ---------------------------------------------------------------------------
 
 # Tile category mapping (must match rl_env.py tile IDs)
-_NUM_OBS_CHANNELS = 13  # Expanded from 12 to 13 (added Path Trace History)
+_NUM_OBS_CHANNELS = 14  # 12 tile channels + path trace + finish-critical path
 
 
 class ObservationPreprocessor:
     """Converts raw 16x16 tile-grid observations into multi-channel float tensors.
 
-    Channel layout (12 channels total):
+    Channel layout (14 channels total):
         0: Walkable ground  (tile >= 18)
         1: Carrot            (tile == 19)
         2: Egg               (tile == 45)
@@ -43,6 +43,8 @@ class ObservationPreprocessor:
         9: Inventory info    (remaining targets normalised + key flags)
        10: Switch/conveyor   (tiles 22-29, 38-43) — mechanically important
        11: Collected/used    (tile == 20 [collected carrot] or 46 [collected egg])
+       12: Path trace history (recent positions visited)
+       13: Finish-critical path (BFS shortest path from agent to finish tile)
     """
 
     def __init__(self, device: torch.device) -> None:
@@ -68,9 +70,16 @@ class ObservationPreprocessor:
         # Full mode: [px, py, <inv 4>, <tiles 256>, <path 256 (optional)>]
         obs_len = len(obs)
         path_grid = np.zeros(256, dtype=np.int16)
+        finish_path_grid = np.zeros(256, dtype=np.int16)
 
-        if obs_len >= 2 + 4 + 256 + 256:
-            # With inventory + path trace
+        if obs_len >= 2 + 4 + 256 + 256 + 256:
+            # With inventory + path trace + finish-critical path
+            inv = obs[2:6]
+            tiles = obs[6:6 + 256]
+            path_grid = obs[6 + 256 : 6 + 512]
+            finish_path_grid = obs[6 + 512 : 6 + 768]
+        elif obs_len >= 2 + 4 + 256 + 256:
+            # With inventory + path trace (no finish path)
             inv = obs[2:6]
             tiles = obs[6:6 + 256]
             path_grid = obs[6 + 256 : 6 + 512]
@@ -144,6 +153,9 @@ class ObservationPreprocessor:
 
         # Channel 12: Path Trace History
         channels[12, :, :] = path_grid.reshape((16, 16)).astype(np.float32)
+
+        # Channel 13: Finish-Critical Path (BFS shortest path to finish)
+        channels[13, :, :] = finish_path_grid.reshape((16, 16)).astype(np.float32)
 
         return torch.from_numpy(channels).to(self.device)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -56,6 +56,9 @@ class RewardConfig:
     no_progress_penalty_hard_after: int = 100
     no_progress_penalty_hard: float = -0.4
     all_collected_bonus: float = 15.0
+    crumble_crossing_penalty: float = -3.0
+    finish_unreachable_penalty: float = -10.0
+    finish_reachable_bonus: float = 2.0
 
 
 class _EnvRenderAssets:
@@ -131,6 +134,10 @@ class BobbyCarrotEnv:
         self.target_positions: set[Tuple[int, int]] = set()
         self.finish_positions: set[Tuple[int, int]] = set()
         self.cached_targets_tile: Optional[set[int]] = None
+        self._bfs_cache_version: int = 0  # Incremented when map changes (crumble collapse)
+        self._finish_reachable_cache: Optional[bool] = None
+        self._finish_reachable_cache_version: int = -1
+        self._last_map_hash: Optional[int] = None
         self.key_bucket_divisor = 2
 
         # Rendering is optional and lazily initialized.
@@ -200,6 +207,13 @@ class BobbyCarrotEnv:
         was_all_collected = self.bobby.is_finished(self.map_info)
         dist_before = self._phase_distance(before_pos, was_all_collected)
 
+        # Snapshot crumble positions before move to detect crumble crossings
+        crumble_before = set()
+        for yy in range(16):
+            for xx in range(16):
+                if self.map_info.data[xx + yy * 16] == 30:
+                    crumble_before.add((xx, yy))
+
         invalid_move = self._apply_action(action)
         if invalid_move:
             reward += self.reward_config.invalid_move
@@ -263,6 +277,32 @@ class BobbyCarrotEnv:
         
         if now_all_collected and not was_all_collected:
             reward += self.reward_config.all_collected_bonus
+
+        # --- Crumble-aware reward shaping ---
+        # Detect crumble tiles that collapsed this step
+        crumble_collapsed = False
+        for yy in range(16):
+            for xx in range(16):
+                if (xx, yy) in crumble_before and self.map_info.data[xx + yy * 16] == 31:
+                    crumble_collapsed = True
+                    break
+            if crumble_collapsed:
+                break
+
+        if crumble_collapsed:
+            # Invalidate BFS cache since map topology changed
+            self._bfs_cache_version += 1
+            # Penalize crossing a crumble tile (one-way bridge consumed)
+            reward += self.reward_config.crumble_crossing_penalty
+            # Check if finish is still reachable after this crumble collapse
+            if self.finish_positions and not self.bobby.dead:
+                if not self._is_finish_reachable(after_pos):
+                    reward += self.reward_config.finish_unreachable_penalty
+
+        # Bonus for having all items collected AND finish still reachable
+        if now_all_collected and not was_all_collected and self.finish_positions:
+            if self._is_finish_reachable(after_pos):
+                reward += self.reward_config.finish_reachable_bonus
 
         self.recent_positions.append(after_pos)
         info["distance_before"] = dist_before
@@ -504,6 +544,9 @@ class BobbyCarrotEnv:
             # Collected egg (death tile)
             if new_item == 46:
                 forbid = True
+            # Hole / death tile (collapsed crumble)
+            if new_item == 31:
+                forbid = True
             # Arrow tile entry restrictions (destination)
             if new_item == 24 and state in {State.Right, State.Down}:
                 forbid = True
@@ -629,10 +672,16 @@ class BobbyCarrotEnv:
             for p_coord in self.recent_positions:
                 path_grid[p_coord[0] + p_coord[1] * 16] = 1
 
+            # Finish-critical path grid: marks tiles on shortest path to finish
+            finish_path_grid = np.zeros(256, dtype=np.int16)
+            critical_path = self.get_finish_critical_path()
+            for cp_coord in critical_path:
+                finish_path_grid[cp_coord[0] + cp_coord[1] * 16] = 1
+
             if self.include_inventory:
                 inv = self._compressed_inventory()
-                return np.concatenate([np.array(base + inv, dtype=np.int16), tiles, path_grid])
-            return np.concatenate([np.array(base, dtype=np.int16), tiles, path_grid])
+                return np.concatenate([np.array(base + inv, dtype=np.int16), tiles, path_grid, finish_path_grid])
+            return np.concatenate([np.array(base, dtype=np.int16), tiles, path_grid, finish_path_grid])
 
         half = self.local_view_size // 2
         local = []
@@ -692,32 +741,108 @@ class BobbyCarrotEnv:
                 if self.map_info.data[x + y * 16] == 44:
                     self.finish_positions.add((x, y))
 
+    def _bfs_shortest_distance(
+        self, start: Tuple[int, int], targets: set[Tuple[int, int]],
+    ) -> Optional[int]:
+        """BFS on walkable tiles to find shortest path distance to any target.
+
+        Walkable: tile >= 18 AND tile != 31 (hole) AND tile != 46 (collected egg).
+        Returns None if no target is reachable.
+        """
+        if not targets:
+            return None
+        if start in targets:
+            return 0
+        assert self.map_info is not None
+
+        visited = set()
+        visited.add(start)
+        queue: deque[Tuple[Tuple[int, int], int]] = deque()
+        queue.append((start, 0))
+
+        while queue:
+            (cx, cy), dist = queue.popleft()
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < 16 and 0 <= ny < 16 and (nx, ny) not in visited:
+                    tile = self.map_info.data[nx + ny * 16]
+                    # Walkable: tile >= 18 and not a death tile
+                    if tile >= 18 and tile != 31 and tile != 46:
+                        if (nx, ny) in targets:
+                            return dist + 1
+                        visited.add((nx, ny))
+                        queue.append(((nx, ny), dist + 1))
+        return None
+
+    def _is_finish_reachable(self, pos: Tuple[int, int]) -> bool:
+        """Check if any finish tile is reachable from pos via walkable tiles."""
+        if self._finish_reachable_cache_version == self._bfs_cache_version:
+            if self._finish_reachable_cache is not None:
+                return self._finish_reachable_cache
+        dist = self._bfs_shortest_distance(pos, self.finish_positions)
+        result = dist is not None
+        self._finish_reachable_cache = result
+        self._finish_reachable_cache_version = self._bfs_cache_version
+        return result
+
     def _min_distance_to_target_cached(self, pos: Tuple[int, int]) -> Optional[int]:
+        """BFS shortest walkable distance to nearest uncollected target."""
         if not self.target_positions:
             return None
-        px, py = pos
-        best: Optional[int] = None
-        for tx, ty in self.target_positions:
-            d = abs(px - tx) + abs(py - ty)
-            if best is None or d < best:
-                best = d
-        return best
+        return self._bfs_shortest_distance(pos, self.target_positions)
 
     def _min_distance_to_finish(self, pos: Tuple[int, int]) -> Optional[int]:
+        """BFS shortest walkable distance to nearest finish tile."""
         if not self.finish_positions:
             return None
-        px, py = pos
-        best: Optional[int] = None
-        for tx, ty in self.finish_positions:
-            d = abs(px - tx) + abs(py - ty)
-            if best is None or d < best:
-                best = d
-        return best
+        return self._bfs_shortest_distance(pos, self.finish_positions)
 
     def _phase_distance(self, pos: Tuple[int, int], all_collected: bool) -> Optional[int]:
         if all_collected:
             return self._min_distance_to_finish(pos)
         return self._min_distance_to_target_cached(pos)
+
+    def get_finish_critical_path(self) -> set[Tuple[int, int]]:
+        """Return set of tiles on the shortest walkable path from agent to finish.
+
+        Used by observation preprocessor to create the finish-critical path channel.
+        Returns empty set if finish is unreachable or no finish exists.
+        """
+        assert self.bobby is not None
+        assert self.map_info is not None
+
+        if not self.finish_positions:
+            return set()
+
+        start = self.bobby.coord_src
+        # BFS to find shortest path, tracking predecessors
+        visited: Dict[Tuple[int, int], Optional[Tuple[int, int]]] = {start: None}
+        queue: deque[Tuple[int, int]] = deque([start])
+        found_target: Optional[Tuple[int, int]] = None
+
+        while queue and found_target is None:
+            cx, cy = queue.popleft()
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < 16 and 0 <= ny < 16 and (nx, ny) not in visited:
+                    tile = self.map_info.data[nx + ny * 16]
+                    if tile >= 18 and tile != 31 and tile != 46:
+                        visited[(nx, ny)] = (cx, cy)
+                        if (nx, ny) in self.finish_positions:
+                            found_target = (nx, ny)
+                            break
+                        queue.append((nx, ny))
+
+        if found_target is None:
+            return set()
+
+        # Trace back path
+        path_tiles: set[Tuple[int, int]] = set()
+        cur: Optional[Tuple[int, int]] = found_target
+        while cur is not None:
+            path_tiles.add(cur)
+            cur = visited.get(cur)
+        return path_tiles
 
     @staticmethod
     def _tile_bucket(tile: int) -> int:
