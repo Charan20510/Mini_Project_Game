@@ -49,7 +49,7 @@ class RewardConfig:
     invalid_move: float = -1.0
     distance_delta_scale: float = 0.5
     new_best_target_distance_scale: float = 0.4
-    new_best_finish_distance_scale: float = 0.8
+    new_best_finish_distance_scale: float = 1.5
     post_collection_step_penalty: float = -0.25
     no_progress_penalty_after: int = 40
     no_progress_penalty: float = -0.2
@@ -59,6 +59,10 @@ class RewardConfig:
     crumble_crossing_penalty: float = -3.0
     finish_unreachable_penalty: float = -10.0
     finish_reachable_bonus: float = 2.0
+    revisit_collected_penalty: float = -0.5
+    repeat_position_penalty: float = -0.3
+    immediate_backtrack_penalty: float = -0.5
+    finish_approach_bonus: float = 0.3
 
 
 class _EnvRenderAssets:
@@ -240,7 +244,23 @@ class BobbyCarrotEnv:
         dist_after = self._phase_distance(after_pos, now_all_collected)
 
         moved = before_pos != after_pos
-        
+
+        # --- Revisit / loop penalties ---
+        if moved:
+            # Penalize stepping on already-collected item tiles (tile 20 = collected carrot, 46 = collected egg)
+            # Only if we did NOT just collect an item on this step (tile changes 19→20 during collection)
+            if not collected_item:
+                after_tile = self.map_info.data[after_pos[0] + after_pos[1] * 16]
+                if after_tile in (20, 46):
+                    reward += self.reward_config.revisit_collected_penalty
+
+            # Penalize immediate backtracking (going right back where you came from)
+            if len(self.recent_positions) >= 2 and after_pos == self.recent_positions[-2]:
+                reward += self.reward_config.immediate_backtrack_penalty
+            # Penalize revisiting any position within the loop window
+            elif after_pos in self.recent_positions:
+                reward += self.reward_config.repeat_position_penalty
+
         # Only compute distance shaping if we DID NOT just collect an item
         # because collecting an item shifts the nearest target metric entirely.
         if moved and not collected_item:
@@ -259,6 +279,10 @@ class BobbyCarrotEnv:
                         self.best_target_distance = dist_after
             else:
                 if dist_after is not None:
+                    # Continuous approach bonus: reward EVERY step closer to finish
+                    if dist_before is not None and dist_after < dist_before:
+                        reward += self.reward_config.finish_approach_bonus
+                    # Best-ever distance bonus (stronger pull)
                     if self.best_finish_distance is None:
                         self.best_finish_distance = dist_after
                     elif dist_after < self.best_finish_distance:
