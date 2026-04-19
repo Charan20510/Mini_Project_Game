@@ -833,6 +833,8 @@ class BobbyCarrotEnv:
 
         while heap:
             dist, (cx, cy) = heapq.heappop(heap)
+            if (cx, cy) in targets:
+                return dist
             if dist > best_dist.get((cx, cy), float('inf')):
                 continue
             for ddx, ddy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
@@ -844,8 +846,6 @@ class BobbyCarrotEnv:
                         new_dist = dist + edge_cost
                         if new_dist < best_dist.get((nx, ny), float('inf')):
                             best_dist[(nx, ny)] = new_dist
-                            if (nx, ny) in targets:
-                                return new_dist
                             heapq.heappush(heap, (new_dist, (nx, ny)))
         return None
 

@@ -42,7 +42,7 @@ class TrainingConfig:
 
     # Observation
     observation_mode: str = "full"
-    max_steps_per_episode: int = 300
+    max_steps_per_episode: int = 500
     reward_scale: float = 1.0  # Full reward magnitude; 0.1 was drowning the completion signal
 
     # Adaptive exploration: force random actions on levels the agent hasn't learned
@@ -62,7 +62,7 @@ class PPOConfig:
     gae_lambda: float = 0.95
     clip_ratio: float = 0.2
     value_coeff: float = 0.5
-    entropy_coeff: float = 0.02  # Higher entropy for exploration on complex levels
+    entropy_coeff: float = 0.04  # Higher entropy for exploration on complex levels
     max_grad_norm: float = 0.5
     rollout_length: int = 256
     n_epochs: int = 4
