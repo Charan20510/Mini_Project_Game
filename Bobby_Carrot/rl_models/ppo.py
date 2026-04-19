@@ -211,19 +211,11 @@ def train_ppo(
     level_cycle_idx = 0  # Round-robin level index for equal exposure
     start_time = time.time()
 
-    # Per-level success tracking for adaptive exploration
+    # Per-level success tracking for curriculum weighted sampling
     level_success_history: Dict[Tuple[str, int], List[float]] = {
         lvl: [] for lvl in active_levels
     }
     _LEVEL_HISTORY_WINDOW = 30  # Track last N episodes per level
-
-    def _level_needs_exploration(lvl: Tuple[str, int]) -> bool:
-        """Check if this level has low success and needs random exploration."""
-        history = level_success_history.get(lvl, [])
-        if len(history) < 5:  # Not enough data — explore by default
-            return True
-        recent = history[-_LEVEL_HISTORY_WINDOW:]
-        return float(np.mean(recent)) < train_config.exploration_success_threshold
 
     print(f"[PPO] Starting training for {train_config.total_timesteps} timesteps")
     print(f"[PPO] Active levels: {len(active_levels)} / {len(all_train_levels)}")
@@ -235,26 +227,7 @@ def train_ppo(
         agent.eval()
 
         for _step in range(ppo_config.rollout_length):
-            # ── Adaptive exploration: ε-greedy on failing levels ──
-            use_random = (
-                train_config.exploration_epsilon > 0
-                and _level_needs_exploration(current_level)
-                and np.random.random() < train_config.exploration_epsilon
-            )
-
-            if use_random:
-                # Take a random VALID action to break out of policy bias loops
-                valid_actions = [i for i in range(agent.n_actions) if action_mask_np[i]]
-                action = int(np.random.choice(valid_actions))
-                # Still compute log_prob and value from the policy (for correct PPO updates)
-                with torch.no_grad():
-                    features = agent.encoder(obs_tensor.unsqueeze(0))
-                    mask = action_mask_tensor.unsqueeze(0)
-                    dist = agent.policy(features, action_mask=mask)
-                    value = float(agent.value(features).item())
-                    log_prob = float(dist.log_prob(torch.tensor([action], device=device)).item())
-            else:
-                action, log_prob, value = agent.select_action(obs_tensor, action_mask_tensor)
+            action, log_prob, value = agent.select_action(obs_tensor, action_mask_tensor)
 
             next_obs_raw, reward, done, info = env.step(action)
 
