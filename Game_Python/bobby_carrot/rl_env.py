@@ -380,6 +380,15 @@ class BobbyCarrotEnv:
             if self.finish_positions and not self.bobby.dead:
                 if not self._is_finish_reachable(after_pos):
                     reward += self.reward_config.finish_unreachable_penalty
+                    # If finish is cut off, early terminate to save time
+                    self.bobby.dead = True
+
+        # Check if any targets are still reachable after this crumble collapse
+        if not now_all_collected and self.target_positions and not self.bobby.dead:
+            if dist_after is None:
+                # All remaining targets are cut off by a hole!
+                reward += self.reward_config.finish_unreachable_penalty
+                self.bobby.dead = True
 
         # Bonus for having all items collected AND finish still reachable
         if now_all_collected and not was_all_collected and self.finish_positions:
@@ -707,7 +716,8 @@ class BobbyCarrotEnv:
         assert self.map_info is not None
 
         was_walking = self.bobby.is_walking()
-        max_internal_frames = 8 * FRAMES_PER_STEP * 3
+        # Death animation takes ~72 frames (12 steps * 3 sub-steps * 2 frames/step)
+        max_internal_frames = 100
 
         for _ in range(max_internal_frames):
             self.frame += 1
