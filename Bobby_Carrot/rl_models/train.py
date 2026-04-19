@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=42, help="Random seed")
     p.add_argument("--device", type=str, default="auto", help="Device: auto, cuda, cpu")
     p.add_argument("--n-envs", type=int, default=4, help="Number of parallel envs (PPO)")
-    p.add_argument("--max-steps", type=int, default=300, help="Max steps per episode")
+    p.add_argument("--max-steps", type=int, default=800, help="Max steps per episode")
 
     # Curriculum
     p.add_argument("--curriculum", action="store_true", default=True, help="Enable curriculum learning")
@@ -70,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     ppo_group.add_argument("--ppo-rollout", type=int, default=256, help="PPO rollout length")
     ppo_group.add_argument("--ppo-minibatch", type=int, default=64, help="PPO minibatch size")
     ppo_group.add_argument("--ppo-entropy", type=float, default=0.01, help="Entropy coefficient")
+    ppo_group.add_argument("--ppo-entropy-min", type=float, default=0.02, help="Minimum entropy coeff (schedule floor)")
     ppo_group.add_argument("--ppo-gamma", type=float, default=0.99, help="Discount factor")
     ppo_group.add_argument("--ppo-gae-lambda", type=float, default=0.95, help="GAE lambda")
 
@@ -168,6 +169,7 @@ def main() -> None:
             rollout_length=args.ppo_rollout,
             minibatch_size=args.ppo_minibatch,
             entropy_coeff=args.ppo_entropy,
+            entropy_min=args.ppo_entropy_min,
             gamma=args.ppo_gamma,
             gae_lambda=args.ppo_gae_lambda,
         )

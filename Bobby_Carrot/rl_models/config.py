@@ -42,7 +42,7 @@ class TrainingConfig:
 
     # Observation
     observation_mode: str = "full"
-    max_steps_per_episode: int = 500
+    max_steps_per_episode: int = 800
     reward_scale: float = 1.0  # Full reward magnitude; 0.1 was drowning the completion signal
 
     # Adaptive exploration: force random actions on levels the agent hasn't learned
@@ -68,6 +68,7 @@ class PPOConfig:
     n_epochs: int = 4
     minibatch_size: int = 64
     normalize_advantages: bool = True
+    entropy_min: float = 0.02  # Minimum entropy coefficient (prevents collapse on unsolved levels)
 
     # Network architecture
     cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64, 64])

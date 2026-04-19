@@ -67,7 +67,8 @@ class RewardConfig:
     # --- Phase 2 additions ---
     collection_progress_scale: float = 0.5       # Last carrot worth (1 + scale)× base
     strategic_crumble_bonus: float = 2.0          # Bonus for crossing crumble AFTER clearing source section
-    crumble_bfs_penalty: int = 5                  # Extra BFS cost per crumble tile traversal
+    crumble_bfs_penalty: int = 2                  # Extra BFS cost per crumble tile traversal (was 5, reduced to avoid repelling agent from mandatory gates)
+    crumble_approach_bonus: float = 0.3           # Bonus for moving toward crumble gate when current section has 0 targets
 
 
 class _EnvRenderAssets:
@@ -289,6 +290,34 @@ class BobbyCarrotEnv:
                 distance_delta = float(dist_before - dist_after)
                 info["distance_delta"] = distance_delta
                 reward += self.reward_config.distance_delta_scale * distance_delta
+
+            # --- Crumble approach bonus ---
+            # When the current section has 0 reachable targets (all behind
+            # crumble gates), give a bonus for moving toward the nearest
+            # crumble gate.  This provides a positive signal in otherwise
+            # reward-barren start corridors (Level 4/5).
+            if not now_all_collected and self.target_positions:
+                local_reachable = self._count_targets_reachable_from(
+                    after_pos, exclude_holes=True
+                )
+                if local_reachable == 0:
+                    # Check if we moved closer to a crumble gate
+                    crumble_positions = set()
+                    for yy in range(16):
+                        for xx in range(16):
+                            if self.map_info.data[xx + yy * 16] == 30:
+                                crumble_positions.add((xx, yy))
+                    if crumble_positions:
+                        dist_crumble_before = self._bfs_shortest_distance(
+                            before_pos, crumble_positions, penalize_crumble=False
+                        )
+                        dist_crumble_after = self._bfs_shortest_distance(
+                            after_pos, crumble_positions, penalize_crumble=False
+                        )
+                        if (dist_crumble_before is not None
+                                and dist_crumble_after is not None
+                                and dist_crumble_after < dist_crumble_before):
+                            reward += self.reward_config.crumble_approach_bonus
 
             if not now_all_collected:
                 if dist_after is not None:
@@ -892,10 +921,20 @@ class BobbyCarrotEnv:
         return result
 
     def _min_distance_to_target_cached(self, pos: Tuple[int, int]) -> Optional[int]:
-        """BFS shortest walkable distance to nearest uncollected target."""
+        """BFS shortest walkable distance to nearest uncollected target.
+
+        Section-aware: if the current section (reachable without crossing
+        crumbles) has zero remaining targets, the crumble BFS penalty is
+        disabled so the distance gradient guides the agent THROUGH the
+        nearest gate rather than repelling it.
+        """
         if not self.target_positions:
             return None
-        return self._bfs_shortest_distance(pos, self.target_positions)
+        # Check if any targets exist in the current section
+        local_targets = self._count_targets_reachable_from(pos, exclude_holes=True)
+        # Disable crumble penalty when crossing is mandatory
+        use_penalty = local_targets > 0
+        return self._bfs_shortest_distance(pos, self.target_positions, penalize_crumble=use_penalty)
 
     def _min_distance_to_finish(self, pos: Tuple[int, int]) -> Optional[int]:
         """BFS shortest walkable distance to nearest finish tile."""

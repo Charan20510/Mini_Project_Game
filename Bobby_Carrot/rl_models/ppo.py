@@ -293,8 +293,20 @@ def train_ppo(
                 if len(level_success_history[current_level]) > _LEVEL_HISTORY_WINDOW * 2:
                     level_success_history[current_level] = level_success_history[current_level][-_LEVEL_HISTORY_WINDOW:]
 
-                # Round-robin level cycling for equal exposure across all levels
-                level_cycle_idx = (level_cycle_idx + 1) % len(active_levels)
+                # Weighted level sampling: failing levels get more practice
+                # (inverse-success weighting — standard curriculum technique)
+                weights = []
+                for lvl in active_levels:
+                    history = level_success_history.get(lvl, [])
+                    if len(history) < 5:
+                        w = 2.0  # High weight for under-explored levels
+                    else:
+                        recent_success = float(np.mean(history[-_LEVEL_HISTORY_WINDOW:]))
+                        w = max(0.2, 1.0 - recent_success)  # More weight to failing levels
+                    weights.append(w)
+                w_arr = np.array(weights)
+                w_arr = w_arr / w_arr.sum()
+                level_cycle_idx = int(np.random.choice(len(active_levels), p=w_arr))
                 current_level = active_levels[level_cycle_idx]
                 env.set_map(map_kind=current_level[0], map_number=current_level[1])
                 obs_raw = env.reset()
@@ -349,13 +361,18 @@ def train_ppo(
                 # Value loss (Huber loss prevents exploding gradients)
                 value_loss = nn.functional.huber_loss(values, b_returns)
 
-                # Entropy bonus
+                # Entropy bonus with linear schedule
                 entropy_loss = -entropy.mean()
+                # Decay entropy coeff from initial to entropy_min over training
+                progress = min(1.0, total_timesteps / train_config.total_timesteps)
+                current_entropy_coeff = ppo_config.entropy_coeff + progress * (
+                    ppo_config.entropy_min - ppo_config.entropy_coeff
+                )
 
                 loss = (
                     policy_loss
                     + ppo_config.value_coeff * value_loss
-                    + ppo_config.entropy_coeff * entropy_loss
+                    + current_entropy_coeff * entropy_loss
                 )
 
                 optimizer.zero_grad()
