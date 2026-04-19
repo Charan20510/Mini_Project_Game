@@ -45,6 +45,10 @@ class TrainingConfig:
     max_steps_per_episode: int = 300
     reward_scale: float = 0.1  # Scale raw environment rewards to stabilize value loss
 
+    # Adaptive exploration: force random actions on levels the agent hasn't learned
+    exploration_epsilon: float = 0.15   # Probability of random action on failing levels
+    exploration_success_threshold: float = 0.3  # Level success below this triggers exploration
+
     # Multi-env (vectorized)
     n_envs: int = 1  # Single env for simplicity
 
