@@ -368,7 +368,9 @@ class BobbyCarrotEnv:
             # Strategic crumble evaluation: check if source section is cleared
             # If all reachable targets from the crossed-from side are collected,
             # this is a SMART crossing (bonus). Otherwise it's premature (penalty).
-            source_targets = self._get_reachable_targets_from(before_pos)
+            # We pass `exclude_pos=after_pos` so the BFS from the newly formed hole
+            # does not cross into the destination section.
+            source_targets = self._get_reachable_targets_from(before_pos, exclude_pos=after_pos)
             if len(source_targets) == 0:
                 # All items in source section collected — good crossing
                 reward += self.reward_config.strategic_crumble_bonus
@@ -885,7 +887,7 @@ class BobbyCarrotEnv:
         return None
 
     def _get_reachable_targets_from(
-        self, pos: Tuple[int, int],
+        self, pos: Tuple[int, int], exclude_pos: Optional[Tuple[int, int]] = None
     ) -> set[Tuple[int, int]]:
         """Return set of uncollected targets reachable from pos WITHOUT crossing crumbles.
 
@@ -898,6 +900,8 @@ class BobbyCarrotEnv:
 
         # BFS from pos, but do NOT traverse crumble tiles (treat them as walls)
         visited: set[Tuple[int, int]] = {pos}
+        if exclude_pos is not None:
+            visited.add(exclude_pos)
         queue: deque[Tuple[int, int]] = deque([pos])
         reachable: set[Tuple[int, int]] = set()
 
