@@ -403,6 +403,17 @@ def train_ppo(
                 f"ent={avg_ent:.4f} | clip={avg_cf:.3f} | "
                 f"levels={len(active_levels)} | {elapsed:.0f}s"
             )
+            # Per-level success breakdown (critical for diagnosing which levels stall)
+            level_parts = []
+            for lvl in active_levels:
+                history = level_success_history.get(lvl, [])
+                if history:
+                    recent = history[-_LEVEL_HISTORY_WINDOW:]
+                    lvl_success = float(np.mean(recent))
+                    level_parts.append(f"{lvl[0][0]}{lvl[1]}={lvl_success:.0%}")
+                else:
+                    level_parts.append(f"{lvl[0][0]}{lvl[1]}=N/A")
+            print(f"[PPO]   per-level: {' | '.join(level_parts)}")
             csv_writer.writerow([
                 total_timesteps, episode_count, f"{avg_reward:.4f}", f"{avg_success:.4f}",
                 f"{avg_pl:.6f}", f"{avg_vl:.6f}", f"{avg_ent:.6f}", f"{avg_cf:.4f}",

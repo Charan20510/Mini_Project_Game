@@ -146,7 +146,7 @@ class ObservationPreprocessor:
         key_gray = float(inv[0]) if len(inv) > 0 else 0.0
         key_yellow = float(inv[1]) if len(inv) > 1 else 0.0
         key_red = float(inv[2]) if len(inv) > 2 else 0.0
-        remaining = float(inv[3]) / 5.0 if len(inv) > 3 else 0.0
+        remaining = float(inv[3]) / 10.0 if len(inv) > 3 else 0.0
         # Encode as a spatial pattern: top-left quadrant = keys, bottom-right = remaining
         channels[9, 0:8, 0:8] = key_gray * 0.33 + key_yellow * 0.33 + key_red * 0.34
         channels[9, 8:16, 8:16] = remaining

@@ -43,7 +43,7 @@ class TrainingConfig:
     # Observation
     observation_mode: str = "full"
     max_steps_per_episode: int = 300
-    reward_scale: float = 0.1  # Scale raw environment rewards to stabilize value loss
+    reward_scale: float = 1.0  # Full reward magnitude; 0.1 was drowning the completion signal
 
     # Adaptive exploration: force random actions on levels the agent hasn't learned
     exploration_epsilon: float = 0.15   # Probability of random action on failing levels

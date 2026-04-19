@@ -765,12 +765,20 @@ class BobbyCarrotEnv:
 
         remaining_carrots = self.map_info.carrot_total - self.bobby.carrot_count
         remaining_eggs = self.map_info.egg_total - self.bobby.egg_count
-        remaining_bucket = min(5, max(0, (remaining_carrots + remaining_eggs) // 2))
+        total_targets = self.map_info.carrot_total + self.map_info.egg_total
+        # Normalize remaining items to 0-10 range (preserves progress on high-carrot
+        # levels like Level 4 with 35 carrots; old bucket capped at 5 and lost signal)
+        if total_targets > 0:
+            remaining_normalized = int(round(
+                10.0 * (remaining_carrots + remaining_eggs) / total_targets
+            ))
+        else:
+            remaining_normalized = 0
         return [
             int(self.bobby.key_gray > 0),
             int(self.bobby.key_yellow > 0),
             int(self.bobby.key_red > 0),
-            remaining_bucket,
+            remaining_normalized,
         ]
 
     def observation_to_key(self, obs: np.ndarray) -> Tuple[int, ...]:
