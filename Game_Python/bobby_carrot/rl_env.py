@@ -52,9 +52,9 @@ class RewardConfig:
     new_best_target_distance_scale: float = 0.4
     new_best_finish_distance_scale: float = 1.5
     post_collection_step_penalty: float = -0.25
-    no_progress_penalty_after: int = 40
+    no_progress_penalty_after: int = 60
     no_progress_penalty: float = -0.2
-    no_progress_penalty_hard_after: int = 100
+    no_progress_penalty_hard_after: int = 150
     no_progress_penalty_hard: float = -0.4
     all_collected_bonus: float = 15.0
     crumble_crossing_penalty: float = -3.0
@@ -377,6 +377,14 @@ class BobbyCarrotEnv:
             else:
                 # Premature crossing — items left behind
                 reward += self.reward_config.crumble_crossing_penalty
+
+            # Reset distance tracking for the new section so the agent
+            # isn't penalised for the distance jump after crossing a gate.
+            new_dist = self._phase_distance(after_pos, now_all_collected)
+            if not now_all_collected:
+                self.best_target_distance = new_dist
+            else:
+                self.best_finish_distance = new_dist
 
             # Check if finish is still reachable after this crumble collapse
             if self.finish_positions and not self.bobby.dead:

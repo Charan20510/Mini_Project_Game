@@ -42,15 +42,18 @@ class TrainingConfig:
 
     # Observation
     observation_mode: str = "full"
-    max_steps_per_episode: int = 800
+    max_steps_per_episode: int = 1000
     reward_scale: float = 1.0  # Full reward magnitude; 0.1 was drowning the completion signal
 
     # Adaptive exploration: force random actions on levels the agent hasn't learned
-    exploration_epsilon: float = 0.15   # Probability of random action on failing levels
+    exploration_epsilon: float = 0.25   # Probability of random action on failing levels
     exploration_success_threshold: float = 0.3  # Level success below this triggers exploration
 
     # Multi-env (vectorized)
     n_envs: int = 1  # Single env for simplicity
+
+    # Transfer learning: reset policy head when resuming from a different phase
+    reset_policy_head_on_resume: bool = True
 
 
 @dataclass
@@ -62,9 +65,9 @@ class PPOConfig:
     gae_lambda: float = 0.95
     clip_ratio: float = 0.2
     value_coeff: float = 0.5
-    entropy_coeff: float = 0.04  # Higher entropy for exploration on complex levels
+    entropy_coeff: float = 0.15  # High initial entropy for complex multi-section levels
     max_grad_norm: float = 0.5
-    rollout_length: int = 256
+    rollout_length: int = 2048
     n_epochs: int = 4
     minibatch_size: int = 64
     normalize_advantages: bool = True

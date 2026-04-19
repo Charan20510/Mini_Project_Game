@@ -47,11 +47,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=42, help="Random seed")
     p.add_argument("--device", type=str, default="auto", help="Device: auto, cuda, cpu")
     p.add_argument("--n-envs", type=int, default=4, help="Number of parallel envs (PPO)")
-    p.add_argument("--max-steps", type=int, default=800, help="Max steps per episode")
+    p.add_argument("--max-steps", type=int, default=1000, help="Max steps per episode")
 
     # Curriculum
     p.add_argument("--curriculum", action="store_true", default=True, help="Enable curriculum learning")
     p.add_argument("--no-curriculum", action="store_false", dest="curriculum")
+    p.add_argument("--reset-policy-head", action="store_true", default=True,
+                   help="Reset policy head when resuming (for phase transfer)")
+    p.add_argument("--no-reset-policy-head", action="store_false", dest="reset_policy_head")
     p.add_argument("--curriculum-start", type=int, default=5, help="Initial number of levels in curriculum")
     p.add_argument("--curriculum-threshold", type=float, default=0.7, help="Success rate to promote")
 
@@ -67,9 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     ppo_group.add_argument("--ppo-lr", type=float, default=3e-4, help="PPO learning rate")
     ppo_group.add_argument("--ppo-clip", type=float, default=0.2, help="PPO clip ratio")
     ppo_group.add_argument("--ppo-epochs", type=int, default=4, help="PPO update epochs")
-    ppo_group.add_argument("--ppo-rollout", type=int, default=256, help="PPO rollout length")
+    ppo_group.add_argument("--ppo-rollout", type=int, default=2048, help="PPO rollout length")
     ppo_group.add_argument("--ppo-minibatch", type=int, default=64, help="PPO minibatch size")
-    ppo_group.add_argument("--ppo-entropy", type=float, default=0.01, help="Entropy coefficient")
+    ppo_group.add_argument("--ppo-entropy", type=float, default=0.15, help="Entropy coefficient (high for complex levels)")
     ppo_group.add_argument("--ppo-entropy-min", type=float, default=0.02, help="Minimum entropy coeff (schedule floor)")
     ppo_group.add_argument("--ppo-gamma", type=float, default=0.99, help="Discount factor")
     ppo_group.add_argument("--ppo-gae-lambda", type=float, default=0.95, help="GAE lambda")
@@ -141,6 +144,7 @@ def main() -> None:
         curriculum_promotion_threshold=args.curriculum_threshold,
         max_steps_per_episode=args.max_steps,
         n_envs=args.n_envs,
+        reset_policy_head_on_resume=args.reset_policy_head,
     )
 
     icm_config = ICMConfig(

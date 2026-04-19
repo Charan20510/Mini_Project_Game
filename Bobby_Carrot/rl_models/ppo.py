@@ -132,6 +132,12 @@ def train_ppo(
         ckpt = torch.load(resume_path, map_location=device, weights_only=False)
         agent.load_state_dict(ckpt['agent_state_dict'])
         print(f"[PPO] Loaded weights from {resume_path}")
+        # Reset policy head for new level distribution to avoid transferred bias
+        if train_config.reset_policy_head_on_resume:
+            from .networks import init_orthogonal
+            agent.policy.linear.reset_parameters()
+            init_orthogonal(agent.policy.linear, gain=0.01)
+            print("[PPO] Reset policy head for phase transfer (encoder retained)")
     optimizer = optim.Adam(agent.parameters(), lr=ppo_config.lr, eps=1e-5)
     preprocessor = ObservationPreprocessor(device)
 
