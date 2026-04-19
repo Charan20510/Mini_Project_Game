@@ -176,10 +176,11 @@ pyrightconfig.json
 # RL model artifacts (too large for regular Git history)
 *.pt
 *.pkl
-Bobby_Carrot/dqn_checkpoint/
-checkpoints/
-logs/
+checkpoints_phase1/
+logs_phase1/
+checkpoints_phase2/
+logs_phase2/
+checkpoints_phase3/
+logs_phase3/
 trained_model.zip
 training_curves.png
-
-# End of https://www.toptal.com/developers/gitignore/api/python

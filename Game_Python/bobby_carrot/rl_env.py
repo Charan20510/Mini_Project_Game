@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Tuple
@@ -63,6 +64,10 @@ class RewardConfig:
     repeat_position_penalty: float = -0.3
     immediate_backtrack_penalty: float = -0.5
     finish_approach_bonus: float = 0.3
+    # --- Phase 2 additions ---
+    collection_progress_scale: float = 0.5       # Last carrot worth (1 + scale)× base
+    strategic_crumble_bonus: float = 2.0          # Bonus for crossing crumble AFTER clearing source section
+    crumble_bfs_penalty: int = 5                  # Extra BFS cost per crumble tile traversal
 
 
 class _EnvRenderAssets:
@@ -232,12 +237,28 @@ class BobbyCarrotEnv:
         egg_delta = self.bobby.egg_count - before_egg
         collected_item = carrot_delta > 0 or egg_delta > 0
 
-        # Give item rewards and update target caches BEFORE checking new distances
+        # Give item rewards with collection progress multiplier
+        # As the agent collects more items, each subsequent one is worth more,
+        # creating momentum to finish (critical for level 4 with 35 carrots).
         if carrot_delta > 0:
-            reward += self.reward_config.carrot * carrot_delta
+            total_targets = self.map_info.carrot_total + self.map_info.egg_total
+            collected_so_far = self.bobby.carrot_count + self.bobby.egg_count
+            if total_targets > 0:
+                collected_fraction = collected_so_far / total_targets
+            else:
+                collected_fraction = 0.0
+            progress_multiplier = 1.0 + self.reward_config.collection_progress_scale * collected_fraction
+            reward += self.reward_config.carrot * carrot_delta * progress_multiplier
             self._cache_target_positions()
         if egg_delta > 0:
-            reward += self.reward_config.egg * egg_delta
+            total_targets = self.map_info.carrot_total + self.map_info.egg_total
+            collected_so_far = self.bobby.carrot_count + self.bobby.egg_count
+            if total_targets > 0:
+                collected_fraction = collected_so_far / total_targets
+            else:
+                collected_fraction = 0.0
+            progress_multiplier = 1.0 + self.reward_config.collection_progress_scale * collected_fraction
+            reward += self.reward_config.egg * egg_delta * progress_multiplier
             self._cache_target_positions()
 
         now_all_collected = self.bobby.is_finished(self.map_info)
@@ -316,8 +337,20 @@ class BobbyCarrotEnv:
         if crumble_collapsed:
             # Invalidate BFS cache since map topology changed
             self._bfs_cache_version += 1
-            # Penalize crossing a crumble tile (one-way bridge consumed)
-            reward += self.reward_config.crumble_crossing_penalty
+
+            # Strategic crumble evaluation: check if source section is cleared
+            # If all reachable targets from the crossed-from side are collected,
+            # this is a SMART crossing (bonus). Otherwise it's premature (penalty).
+            source_targets_remaining = self._count_targets_reachable_from(
+                before_pos, exclude_holes=True
+            )
+            if source_targets_remaining == 0:
+                # All items in source section collected — good crossing
+                reward += self.reward_config.strategic_crumble_bonus
+            else:
+                # Premature crossing — items left behind
+                reward += self.reward_config.crumble_crossing_penalty
+
             # Check if finish is still reachable after this crumble collapse
             if self.finish_positions and not self.bobby.dead:
                 if not self._is_finish_reachable(after_pos):
@@ -767,8 +800,13 @@ class BobbyCarrotEnv:
 
     def _bfs_shortest_distance(
         self, start: Tuple[int, int], targets: set[Tuple[int, int]],
+        penalize_crumble: bool = True,
     ) -> Optional[int]:
-        """BFS on walkable tiles to find shortest path distance to any target.
+        """Shortest walkable distance to any target, with crumble-awareness.
+
+        When penalize_crumble is True, uses Dijkstra with extra cost for crumble
+        tiles (tile 30). This prevents the distance shaping from guiding the
+        agent through one-way crumble gates when a safer path exists.
 
         Walkable: tile >= 18 AND tile != 31 (hole) AND tile != 46 (collected egg).
         Returns None if no target is reachable.
@@ -779,24 +817,60 @@ class BobbyCarrotEnv:
             return 0
         assert self.map_info is not None
 
-        visited = set()
-        visited.add(start)
-        queue: deque[Tuple[Tuple[int, int], int]] = deque()
-        queue.append((start, 0))
+        crumble_extra = self.reward_config.crumble_bfs_penalty if penalize_crumble else 0
+
+        # Dijkstra with crumble penalty (degrades to BFS when penalty=0)
+        best_dist: Dict[Tuple[int, int], int] = {start: 0}
+        heap: list[Tuple[int, Tuple[int, int]]] = [(0, start)]
+
+        while heap:
+            dist, (cx, cy) = heapq.heappop(heap)
+            if dist > best_dist.get((cx, cy), float('inf')):
+                continue
+            for ddx, ddy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = cx + ddx, cy + ddy
+                if 0 <= nx < 16 and 0 <= ny < 16:
+                    tile = self.map_info.data[nx + ny * 16]
+                    if tile >= 18 and tile != 31 and tile != 46:
+                        edge_cost = 1 + (crumble_extra if tile == 30 else 0)
+                        new_dist = dist + edge_cost
+                        if new_dist < best_dist.get((nx, ny), float('inf')):
+                            best_dist[(nx, ny)] = new_dist
+                            if (nx, ny) in targets:
+                                return new_dist
+                            heapq.heappush(heap, (new_dist, (nx, ny)))
+        return None
+
+    def _count_targets_reachable_from(
+        self, pos: Tuple[int, int], exclude_holes: bool = True,
+    ) -> int:
+        """Count uncollected targets reachable from pos WITHOUT crossing crumble tiles.
+
+        Used by the strategic crumble evaluation: before crossing a crumble gate,
+        check how many targets remain on the source side.
+        """
+        assert self.map_info is not None
+        if not self.target_positions:
+            return 0
+
+        # BFS from pos, but do NOT traverse crumble tiles (treat them as walls)
+        visited: set[Tuple[int, int]] = {pos}
+        queue: deque[Tuple[int, int]] = deque([pos])
+        count = 0
 
         while queue:
-            (cx, cy), dist = queue.popleft()
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                nx, ny = cx + dx, cy + dy
+            cx, cy = queue.popleft()
+            if (cx, cy) in self.target_positions:
+                count += 1
+            for ddx, ddy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = cx + ddx, cy + ddy
                 if 0 <= nx < 16 and 0 <= ny < 16 and (nx, ny) not in visited:
                     tile = self.map_info.data[nx + ny * 16]
-                    # Walkable: tile >= 18 and not a death tile
-                    if tile >= 18 and tile != 31 and tile != 46:
-                        if (nx, ny) in targets:
-                            return dist + 1
+                    # Walkable AND not a crumble (we stay within this section)
+                    if tile >= 18 and tile != 30 and tile != 31 and tile != 46:
                         visited.add((nx, ny))
-                        queue.append(((nx, ny), dist + 1))
-        return None
+                        queue.append((nx, ny))
+        return count
 
     def _is_finish_reachable(self, pos: Tuple[int, int]) -> bool:
         """Check if any finish tile is reachable from pos via walkable tiles."""
