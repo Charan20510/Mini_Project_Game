@@ -297,10 +297,8 @@ class BobbyCarrotEnv:
             # crumble gate.  This provides a positive signal in otherwise
             # reward-barren start corridors (Level 4/5).
             if not now_all_collected and self.target_positions:
-                local_reachable = self._count_targets_reachable_from(
-                    after_pos, exclude_holes=True
-                )
-                if local_reachable == 0:
+                local_targets = self._get_reachable_targets_from(after_pos)
+                if len(local_targets) == 0:
                     # Check if we moved closer to a crumble gate
                     crumble_positions = set()
                     for yy in range(16):
@@ -370,10 +368,8 @@ class BobbyCarrotEnv:
             # Strategic crumble evaluation: check if source section is cleared
             # If all reachable targets from the crossed-from side are collected,
             # this is a SMART crossing (bonus). Otherwise it's premature (penalty).
-            source_targets_remaining = self._count_targets_reachable_from(
-                before_pos, exclude_holes=True
-            )
-            if source_targets_remaining == 0:
+            source_targets = self._get_reachable_targets_from(before_pos)
+            if len(source_targets) == 0:
                 # All items in source section collected — good crossing
                 reward += self.reward_config.strategic_crumble_bonus
             else:
@@ -878,27 +874,27 @@ class BobbyCarrotEnv:
                             heapq.heappush(heap, (new_dist, (nx, ny)))
         return None
 
-    def _count_targets_reachable_from(
-        self, pos: Tuple[int, int], exclude_holes: bool = True,
-    ) -> int:
-        """Count uncollected targets reachable from pos WITHOUT crossing crumble tiles.
+    def _get_reachable_targets_from(
+        self, pos: Tuple[int, int],
+    ) -> set[Tuple[int, int]]:
+        """Return set of uncollected targets reachable from pos WITHOUT crossing crumbles.
 
         Used by the strategic crumble evaluation: before crossing a crumble gate,
-        check how many targets remain on the source side.
+        check if any targets remain on the source side.
         """
         assert self.map_info is not None
         if not self.target_positions:
-            return 0
+            return set()
 
         # BFS from pos, but do NOT traverse crumble tiles (treat them as walls)
         visited: set[Tuple[int, int]] = {pos}
         queue: deque[Tuple[int, int]] = deque([pos])
-        count = 0
+        reachable: set[Tuple[int, int]] = set()
 
         while queue:
             cx, cy = queue.popleft()
             if (cx, cy) in self.target_positions:
-                count += 1
+                reachable.add((cx, cy))
             for ddx, ddy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nx, ny = cx + ddx, cy + ddy
                 if 0 <= nx < 16 and 0 <= ny < 16 and (nx, ny) not in visited:
@@ -907,7 +903,7 @@ class BobbyCarrotEnv:
                     if tile >= 18 and tile != 30 and tile != 31 and tile != 46:
                         visited.add((nx, ny))
                         queue.append((nx, ny))
-        return count
+        return reachable
 
     def _is_finish_reachable(self, pos: Tuple[int, int]) -> bool:
         """Check if any finish tile is reachable from pos via walkable tiles."""
@@ -923,18 +919,20 @@ class BobbyCarrotEnv:
     def _min_distance_to_target_cached(self, pos: Tuple[int, int]) -> Optional[int]:
         """BFS shortest walkable distance to nearest uncollected target.
 
-        Section-aware: if the current section (reachable without crossing
-        crumbles) has zero remaining targets, the crumble BFS penalty is
-        disabled so the distance gradient guides the agent THROUGH the
-        nearest gate rather than repelling it.
+        Strict Sectioning: if the current section has remaining targets,
+        only guide the agent to those targets. If no targets remain locally,
+        guide the agent to remote targets while penalizing crumble gate traversal.
         """
         if not self.target_positions:
             return None
-        # Check if any targets exist in the current section
-        local_targets = self._count_targets_reachable_from(pos, exclude_holes=True)
-        # Disable crumble penalty when crossing is mandatory
-        use_penalty = local_targets > 0
-        return self._bfs_shortest_distance(pos, self.target_positions, penalize_crumble=use_penalty)
+        # Get targets reachable in the current section
+        local_targets = self._get_reachable_targets_from(pos)
+        if local_targets:
+            # Strict sectioning: guide ONLY to local targets.
+            return self._bfs_shortest_distance(pos, local_targets, penalize_crumble=False)
+        else:
+            # Must cross a section: guide to remote targets, but penalize paths with more crumbles.
+            return self._bfs_shortest_distance(pos, self.target_positions, penalize_crumble=True)
 
     def _min_distance_to_finish(self, pos: Tuple[int, int]) -> Optional[int]:
         """BFS shortest walkable distance to nearest finish tile."""
