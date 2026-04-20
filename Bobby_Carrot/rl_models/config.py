@@ -52,8 +52,11 @@ class TrainingConfig:
     # Multi-env (vectorized)
     n_envs: int = 1  # Single env for simplicity
 
-    # Transfer learning: reset policy head when resuming from a different phase
-    reset_policy_head_on_resume: bool = True
+    # Transfer learning: reset policy head when resuming from a different phase.
+    # Default False — action semantics (L/R/U/D) are identical across all Bobby
+    # Carrot levels, so discarding learned action preferences is almost always
+    # harmful. Only set True if the action space *semantics* change.
+    reset_policy_head_on_resume: bool = False
 
 
 @dataclass
