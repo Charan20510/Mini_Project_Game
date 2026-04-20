@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.distributions
 import torch.nn as nn
 import torch.optim as optim
 
@@ -152,6 +153,12 @@ def train_ppo(
     if str(game_python) not in sys.path:
         sys.path.insert(0, str(game_python))
     from bobby_carrot.rl_env import BobbyCarrotEnv  # type: ignore
+
+    # Disable PyTorch distribution argument validation globally.
+    # In Python debug mode (__debug__=True, the default), Distribution._validate_args
+    # defaults to True and rejects -inf / NaN logits even when validate_args=False is
+    # passed to the constructor.  We have our own NaN guards so this is safe to disable.
+    torch.distributions.Distribution.set_default_validate_args(False)
 
     # Device setup
     if train_config.device == "auto":
