@@ -39,6 +39,20 @@ class TrainingConfig:
     curriculum_promotion_window: int = 100
     curriculum_promotion_threshold: float = 0.6  # 60% success to promote
     curriculum_add_levels: int = 2        # Add 2 levels per promotion
+    # Anti-forgetting (Phase 2 fix): keep mastered levels practiced even when
+    # new levels are failing hard, and require 2 consecutive windows above
+    # threshold before admitting the next level.
+    level_history_window: int = 60        # Widened from 30: lower-variance per-level signal
+    curriculum_mastery_floor: float = 0.60  # Min sampling weight for a mastered (≥75%) level
+    curriculum_min_quota: float = 0.15    # Every active level must get ≥ this fraction of rollout episodes
+    curriculum_dwell_windows: int = 2     # Highest level must stay ≥ threshold this many windows
+    # On each promotion, boost entropy_coeff for N steps to force exploration
+    # on the newly-added level before the LR schedule tightens it.
+    entropy_boost_steps: int = 50_000
+    entropy_boost_multiplier: float = 2.0
+    # Cosine decay of LR over the last fraction of training (0.0 disables).
+    lr_decay_final_fraction: float = 0.3  # Decay over the last 30% of training
+    lr_decay_min_multiplier: float = 0.3  # LR floor = lr * 0.3
 
     # Observation
     observation_mode: str = "full"

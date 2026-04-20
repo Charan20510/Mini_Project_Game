@@ -15,6 +15,9 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 
+import heapq
+from collections import deque
+
 import numpy as np
 import torch
 
@@ -31,6 +34,80 @@ from Bobby_Carrot.rl_models.config import PPOConfig, RainbowConfig, LevelConfig
 from Bobby_Carrot.rl_models.networks import ObservationPreprocessor
 from Bobby_Carrot.rl_models.ppo import PPOAgent
 from Bobby_Carrot.rl_models.rainbow import RainbowAgent
+
+
+def _bfs_distance(data: list, start: Tuple[int, int], goals: set) -> int:
+    """Shortest walkable-tile distance from start to any goal. inf if unreachable.
+
+    Walkable: tile >= 18 AND tile not in {31, 46} (hole/collected-egg trap).
+    Crumble tiles (30) are treated as walkable here — we want the ideal path
+    assuming correct crumble traversal order.
+    """
+    if start in goals:
+        return 0
+    visited = {start}
+    queue = deque([(start, 0)])
+    while queue:
+        (cx, cy), dist = queue.popleft()
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            nx, ny = cx + dx, cy + dy
+            if 0 <= nx < 16 and 0 <= ny < 16 and (nx, ny) not in visited:
+                tile = data[nx + ny * 16]
+                if tile >= 18 and tile != 31 and tile != 46:
+                    if (nx, ny) in goals:
+                        return dist + 1
+                    visited.add((nx, ny))
+                    queue.append(((nx, ny), dist + 1))
+    return 10**9  # Effectively unreachable — caller should treat as inf
+
+
+def compute_optimal_path_length(env) -> int:
+    """Greedy nearest-target TSP approximation: start → nearest carrot → ... → finish.
+
+    Used as the denominator for `steps_to_solve / shortest_path` ratio in eval.
+    Exact TSP is NP-hard, but greedy nearest-neighbour on a 16×16 grid with
+    few (<20) targets is close enough to give a meaningful overhead metric.
+    Returns 10**9 when no feasible plan exists (unreachable targets / finish).
+    """
+    data = list(env.map_info.data)
+    pos = env.bobby.coord_src
+    targets = set()
+    finish = set()
+    for y in range(16):
+        for x in range(16):
+            t = data[x + y * 16]
+            if t == 19 or t == 45:
+                targets.add((x, y))
+            elif t == 44:
+                finish.add((x, y))
+
+    total = 0
+    while targets:
+        best_dist = 10**9
+        best_tgt = None
+        for tgt in targets:
+            d = _bfs_distance(data, pos, {tgt})
+            if d < best_dist:
+                best_dist = d
+                best_tgt = tgt
+        if best_tgt is None or best_dist >= 10**9:
+            return 10**9
+        total += best_dist
+        pos = best_tgt
+        targets.remove(best_tgt)
+        # Simulate collection: tile 19 → 20, tile 45 → 46 (hazard).
+        idx = pos[0] + pos[1] * 16
+        if data[idx] == 19:
+            data[idx] = 20
+        elif data[idx] == 45:
+            data[idx] = 46
+
+    if not finish:
+        return total
+    final_leg = _bfs_distance(data, pos, finish)
+    if final_leg >= 10**9:
+        return 10**9
+    return total + final_leg
 
 
 def evaluate_agent(
@@ -96,8 +173,10 @@ def evaluate_agent(
     print(f"  Device: {device}")
     print(f"{'='*70}\n")
 
-    print(f"{'Level':<15} {'Success%':>10} {'Collected%':>12} {'Avg Reward':>12} {'Avg Steps':>10}")
-    print("-" * 60)
+    print(f"{'Level':<15} {'Success%':>10} {'Collected%':>12} {'Avg Reward':>12} {'Avg Steps':>10} {'Path Ratio':>11}")
+    print("-" * 72)
+
+    all_path_ratios = []
 
     for kind, num in levels:
         level_key = f"{kind}-{num:02d}"
@@ -105,6 +184,7 @@ def evaluate_agent(
         rewards = []
         steps = []
         collected = []
+        path_ratios: List[float] = []
 
         env = BobbyCarrotEnv(
             map_kind=kind,
@@ -117,6 +197,9 @@ def evaluate_agent(
 
         for ep in range(episodes_per_level):
             obs_raw = env.reset()
+            # Compute ideal path length BEFORE the episode runs (greedy
+            # nearest-target TSP).  Used as denominator for path-ratio.
+            optimal_len = compute_optimal_path_length(env)
             done = False
             ep_reward = 0.0
             ep_steps = 0
@@ -158,10 +241,15 @@ def evaluate_agent(
                     import time
                     time.sleep(1.0 / render_fps)
 
-            successes.append(1.0 if info.get("level_completed", False) else 0.0)
+            successful = info.get("level_completed", False)
+            successes.append(1.0 if successful else 0.0)
             collected.append(1.0 if info.get("all_collected", False) else 0.0)
             rewards.append(ep_reward)
             steps.append(ep_steps)
+            # Only meaningful when the episode actually solved the level —
+            # otherwise "steps_used" is a timeout, not a solution length.
+            if successful and optimal_len < 10**9 and optimal_len > 0:
+                path_ratios.append(ep_steps / float(optimal_len))
 
         env.close()
 
@@ -169,33 +257,39 @@ def evaluate_agent(
         level_collected = float(np.mean(collected))
         level_reward = float(np.mean(rewards))
         level_steps = float(np.mean(steps))
+        level_ratio = float(np.mean(path_ratios)) if path_ratios else float("nan")
 
         results[level_key] = {
             "success_rate": level_success,
             "collection_rate": level_collected,
             "avg_reward": level_reward,
             "avg_steps": level_steps,
+            "path_ratio": level_ratio,
         }
 
         all_successes.extend(successes)
         all_rewards.extend(rewards)
         all_steps.extend(steps)
         all_collected.extend(collected)
+        all_path_ratios.extend(path_ratios)
 
+        ratio_str = f"{level_ratio:>10.2f}" if not np.isnan(level_ratio) else f"{'n/a':>10}"
         print(
             f"{level_key:<15} {level_success:>9.1%} {level_collected:>11.1%} "
-            f"{level_reward:>11.2f} {level_steps:>9.1f}"
+            f"{level_reward:>11.2f} {level_steps:>9.1f} {ratio_str}"
         )
 
     # Aggregate
-    print("-" * 60)
+    print("-" * 72)
     agg_success = float(np.mean(all_successes))
     agg_collected = float(np.mean(all_collected))
     agg_reward = float(np.mean(all_rewards))
     agg_steps = float(np.mean(all_steps))
+    agg_ratio = float(np.mean(all_path_ratios)) if all_path_ratios else float("nan")
+    agg_ratio_str = f"{agg_ratio:>10.2f}" if not np.isnan(agg_ratio) else f"{'n/a':>10}"
     print(
         f"{'AGGREGATE':<15} {agg_success:>9.1%} {agg_collected:>11.1%} "
-        f"{agg_reward:>11.2f} {agg_steps:>9.1f}"
+        f"{agg_reward:>11.2f} {agg_steps:>9.1f} {agg_ratio_str}"
     )
     print()
 
@@ -206,6 +300,7 @@ def evaluate_agent(
             "collection_rate": agg_collected,
             "avg_reward": agg_reward,
             "avg_steps": agg_steps,
+            "path_ratio": agg_ratio,
             "total_episodes": len(all_successes),
         },
     }

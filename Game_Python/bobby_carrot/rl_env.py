@@ -48,7 +48,9 @@ class RewardConfig:
     death: float = -100.0
     step: float = -0.05
     invalid_move: float = -1.0
-    distance_delta_scale: float = 0.5
+    # Phase 2 fix: distance shaping was 0.5 — too strong, caused the agent to
+    # keep being pulled back toward tiles it had already cleared.
+    distance_delta_scale: float = 0.3
     new_best_target_distance_scale: float = 0.4
     new_best_finish_distance_scale: float = 1.5
     post_collection_step_penalty: float = -0.25
@@ -61,10 +63,13 @@ class RewardConfig:
     crumble_stranded_per_item: float = -1.5   # Additional penalty per item stranded by a premature crossing
     finish_unreachable_penalty: float = -25.0
     finish_reachable_bonus: float = 2.0
-    revisit_collected_penalty: float = -0.5
-    repeat_position_penalty: float = -0.3
-    immediate_backtrack_penalty: float = -0.5
-    finish_approach_bonus: float = 0.3
+    # Phase 2 fix: stronger revisit penalties so a revisit wipes at least a
+    # half-step of distance shaping (0.3 delta_scale × 1 = 0.3).
+    revisit_collected_penalty: float = -0.8
+    repeat_position_penalty: float = -0.4
+    immediate_backtrack_penalty: float = -0.75
+    # Phase 2 fix: halved to reduce over-reliance on dense gradient pull.
+    finish_approach_bonus: float = 0.15
     # --- Phase 2 additions ---
     collection_progress_scale: float = 0.5       # Last carrot worth (1 + scale)× base
     strategic_crumble_bonus: float = 2.0          # Bonus for crossing crumble AFTER clearing source section
@@ -109,7 +114,7 @@ class BobbyCarrotEnv:
         headless: bool = True,
         reward_config: Optional[RewardConfig] = None,
         max_steps: int = 1000,
-        loop_window: int = 12,
+        loop_window: int = 32,
         debug: bool = False,
         debug_every: int = 100,
     ) -> None:

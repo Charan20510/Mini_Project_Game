@@ -215,7 +215,12 @@ def train_ppo(
     level_success_history: Dict[Tuple[str, int], List[float]] = {
         lvl: [] for lvl in active_levels
     }
-    _LEVEL_HISTORY_WINDOW = 30  # Track last N episodes per level
+    _LEVEL_HISTORY_WINDOW = train_config.level_history_window
+
+    # Anti-forgetting: track per-rollout episode counts per level to enforce
+    # a minimum quota for mastered levels, and a dwell counter for promotion.
+    promotion_dwell_counter = 0
+    last_entropy_boost_until = 0  # total_timesteps at which the boost expires
 
     print(f"[PPO] Starting training for {train_config.total_timesteps} timesteps")
     print(f"[PPO] Active levels: {len(active_levels)} / {len(all_train_levels)}")
@@ -273,8 +278,10 @@ def train_ppo(
                     level_success_history[current_level] = level_success_history[current_level][-_LEVEL_HISTORY_WINDOW:]
 
                 # Weighted level sampling: failing levels get more practice.
-                # Mastered levels (≥75% success) are protected with a floor of 0.40
-                # so they stay practiced even when L4/L5 are failing hard.
+                # Anti-forgetting: mastered levels get a high floor AND a
+                # minimum quota so they cannot be starved when new levels
+                # fail hard (the Phase 2 L2/L3 collapse pattern).
+                mastery_floor = train_config.curriculum_mastery_floor
                 weights = []
                 for lvl in active_levels:
                     history = level_success_history.get(lvl, [])
@@ -283,14 +290,30 @@ def train_ppo(
                     else:
                         recent_success = float(np.mean(history[-_LEVEL_HISTORY_WINDOW:]))
                         if recent_success >= 0.75:
-                            w = 0.40  # Mastery floor — never starve a learned level
+                            w = mastery_floor  # Mastered — keep practicing
                         elif recent_success >= 0.50:
-                            w = max(0.35, 1.0 - recent_success)
+                            w = max(mastery_floor, 1.0 - recent_success)
                         else:
                             w = max(0.50, 1.0 - recent_success)
                     weights.append(w)
                 w_arr = np.array(weights)
                 w_arr = w_arr / w_arr.sum()
+                # Enforce minimum quota: no level falls below curriculum_min_quota
+                # fraction of sampling mass.  This is the hard anti-forgetting
+                # guard on top of the soft mastery floor.
+                min_quota = train_config.curriculum_min_quota
+                if min_quota > 0 and len(active_levels) > 1:
+                    max_quota = 1.0 / len(active_levels)
+                    eff_quota = min(min_quota, max_quota * 0.95)
+                    deficit_mask = w_arr < eff_quota
+                    if deficit_mask.any():
+                        needed = (eff_quota - w_arr[deficit_mask]).sum()
+                        surplus_mask = w_arr >= eff_quota
+                        surplus = w_arr[surplus_mask].sum()
+                        if surplus > needed:
+                            w_arr[deficit_mask] = eff_quota
+                            w_arr[surplus_mask] = w_arr[surplus_mask] * (surplus - needed) / surplus
+                            w_arr = w_arr / w_arr.sum()
                 level_cycle_idx = int(np.random.choice(len(active_levels), p=w_arr))
                 current_level = active_levels[level_cycle_idx]
                 env.set_map(map_kind=current_level[0], map_number=current_level[1])
@@ -353,6 +376,25 @@ def train_ppo(
                 current_entropy_coeff = ppo_config.entropy_coeff + progress * (
                     ppo_config.entropy_min - ppo_config.entropy_coeff
                 )
+                # Temporary entropy boost after a curriculum promotion —
+                # forces exploration on the newly-added level before the
+                # schedule collapses entropy.
+                if total_timesteps < last_entropy_boost_until:
+                    current_entropy_coeff *= train_config.entropy_boost_multiplier
+
+                # Cosine LR decay over the last lr_decay_final_fraction of
+                # training so L4/L5 policy settles without re-breaking L1–L3.
+                decay_frac = train_config.lr_decay_final_fraction
+                if decay_frac > 0:
+                    decay_start = 1.0 - decay_frac
+                    if progress >= decay_start:
+                        lr_prog = (progress - decay_start) / max(1e-8, decay_frac)
+                        cosine = 0.5 * (1.0 + np.cos(np.pi * min(1.0, lr_prog)))
+                        lr_mult = train_config.lr_decay_min_multiplier + (
+                            1.0 - train_config.lr_decay_min_multiplier
+                        ) * cosine
+                        for pg in optimizer.param_groups:
+                            pg["lr"] = ppo_config.lr * lr_mult
 
                 loss = (
                     policy_loss
@@ -425,24 +467,33 @@ def train_ppo(
 
         # ── Curriculum Promotion ──────────────────────────────
         # Gate: unlock next level only when the current highest active level
-        # has reached 70% success over its last _LEVEL_HISTORY_WINDOW episodes.
-        # Add exactly ONE level at a time to avoid flooding training with
-        # multiple failing levels simultaneously.
+        # has reached threshold success over curriculum_dwell_windows
+        # consecutive evaluation windows.  Dwell prevents one lucky window
+        # from triggering a premature promotion (Phase 2 L4→L5 pattern).
         if train_config.curriculum and len(active_levels) < len(all_train_levels):
             highest_active = active_levels[-1]
             history_highest = level_success_history.get(highest_active, [])
             if len(history_highest) >= _LEVEL_HISTORY_WINDOW:
                 highest_success = float(np.mean(history_highest[-_LEVEL_HISTORY_WINDOW:]))
-                if highest_success >= 0.70:
+                if highest_success >= train_config.curriculum_promotion_threshold:
+                    promotion_dwell_counter += 1
+                else:
+                    promotion_dwell_counter = 0
+
+                if promotion_dwell_counter >= train_config.curriculum_dwell_windows:
                     old_count = len(active_levels)
                     active_levels = all_train_levels[:old_count + 1]
                     new_lvl = active_levels[-1]
                     if new_lvl not in level_success_history:
                         level_success_history[new_lvl] = []
                     curriculum_window.clear()
+                    promotion_dwell_counter = 0
+                    # Trigger entropy boost for entropy_boost_steps on the new level.
+                    last_entropy_boost_until = total_timesteps + train_config.entropy_boost_steps
                     print(
                         f"[PPO] Curriculum promotion: {old_count} -> {len(active_levels)} levels "
-                        f"({highest_active[0]}{highest_active[1]} success={highest_success:.2%})"
+                        f"({highest_active[0]}{highest_active[1]} success={highest_success:.2%}) "
+                        f"| entropy boost active until t={last_entropy_boost_until}"
                     )
 
         # ── Checkpointing ─────────────────────────────────────

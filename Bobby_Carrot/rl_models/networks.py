@@ -42,7 +42,7 @@ class ObservationPreprocessor:
         8: Agent position    (1 at agent pos)
         9: Inventory info    (remaining targets normalised + key flags)
        10: Switch/conveyor   (tiles 22-29, 38-43) — mechanically important
-       11: Collected/used    (tile == 20 [collected carrot] or 46 [collected egg])
+       11: Visited-safe      (tile == 20, previously-a-carrot, now walkable)
        12: Path trace history (recent positions visited)
        13: Finish-critical path (BFS shortest path from agent to finish tile)
     """
@@ -134,8 +134,9 @@ class ObservationPreprocessor:
                 # Channel 10: Switch/conveyor tiles
                 if tile in (22, 23, 24, 25, 26, 27, 28, 29, 38, 39, 40, 41, 42, 43):
                     channels[10, y, x] = 1.0
-                # Channel 11: Collected/used tiles (history indicator)
-                if tile == 20 or tile == 46:
+                # Channel 11: Visited-safe tiles (only tile==20; tile==46 is
+                # already on channel 5 as a hazard — avoid duplicate signal).
+                if tile == 20:
                     channels[11, y, x] = 1.0
 
         # Agent position channel
