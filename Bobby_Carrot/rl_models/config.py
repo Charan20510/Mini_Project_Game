@@ -63,18 +63,18 @@ class TrainingConfig:
 class PPOConfig:
     """PPO-specific hyperparameters."""
 
-    lr: float = 3e-4
+    lr: float = 1e-4           # Reduced from 3e-4: slower updates preserve Phase-1 weights on L1-L3
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    clip_ratio: float = 0.2
+    clip_ratio: float = 0.15   # Tightened from 0.2: prevents large policy jumps on L4/L5 failures
     value_coeff: float = 0.5
-    entropy_coeff: float = 0.15  # High initial entropy for complex multi-section levels
+    entropy_coeff: float = 0.10  # Slightly lower start; policy is warm-started from Phase 1
     max_grad_norm: float = 0.5
     rollout_length: int = 2048
     n_epochs: int = 4
     minibatch_size: int = 64
     normalize_advantages: bool = True
-    entropy_min: float = 0.02  # Minimum entropy coefficient (prevents collapse on unsolved levels)
+    entropy_min: float = 0.05  # Raised from 0.02: keeps exploration alive on unsolved L4/L5
 
     # Network architecture
     cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64, 64])

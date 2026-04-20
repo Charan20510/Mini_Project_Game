@@ -58,7 +58,8 @@ class RewardConfig:
     no_progress_penalty_hard: float = -0.4
     all_collected_bonus: float = 15.0
     crumble_crossing_penalty: float = -3.0
-    finish_unreachable_penalty: float = -10.0
+    crumble_stranded_per_item: float = -1.5   # Additional penalty per item stranded by a premature crossing
+    finish_unreachable_penalty: float = -25.0
     finish_reachable_bonus: float = 2.0
     revisit_collected_penalty: float = -0.5
     repeat_position_penalty: float = -0.3
@@ -365,9 +366,7 @@ class BobbyCarrotEnv:
             # Invalidate BFS cache since map topology changed
             self._bfs_cache_version += 1
 
-            # Strategic crumble evaluation: check if source section is cleared
-            # If all reachable targets from the crossed-from side are collected,
-            # this is a SMART crossing (bonus). Otherwise it's premature (penalty).
+            # Strategic crumble evaluation: check if source section is cleared.
             # We pass `exclude_pos=after_pos` so the BFS from the newly formed hole
             # does not cross into the destination section.
             source_targets = self._get_reachable_targets_from(before_pos, exclude_pos=after_pos)
@@ -375,8 +374,15 @@ class BobbyCarrotEnv:
                 # All items in source section collected — good crossing
                 reward += self.reward_config.strategic_crumble_bonus
             else:
-                # Premature crossing — items left behind
-                reward += self.reward_config.crumble_crossing_penalty
+                # Premature crossing — items permanently stranded, level is now unwinnable.
+                # Scale penalty by how many items are cut off so the agent learns the
+                # severity is proportional (e.g. stranding 10 carrots = much worse than 1).
+                stranded_count = len(source_targets)
+                reward += (self.reward_config.crumble_crossing_penalty
+                           + self.reward_config.crumble_stranded_per_item * stranded_count)
+                # Terminate immediately — all items must be collected but these are
+                # now inaccessible, so there is no point continuing the episode.
+                self.bobby.dead = True
 
             # Reset distance tracking for the new section so the agent
             # isn't penalised for the distance jump after crossing a gate.
@@ -390,7 +396,6 @@ class BobbyCarrotEnv:
             if self.finish_positions and not self.bobby.dead:
                 if not self._is_finish_reachable(after_pos):
                     reward += self.reward_config.finish_unreachable_penalty
-                    # If finish is cut off, early terminate to save time
                     self.bobby.dead = True
 
         # Check if any targets are still reachable after this crumble collapse
@@ -968,7 +973,12 @@ class BobbyCarrotEnv:
         return self._min_distance_to_target_cached(pos)
 
     def get_finish_critical_path(self) -> set[Tuple[int, int]]:
-        """Return set of tiles on the shortest walkable path from agent to finish.
+        """Return set of tiles on the lowest-cost path from agent to finish.
+
+        When items are still uncollected, crumble tiles carry a high traversal
+        cost (20) so the path shown in channel 13 avoids crossing crumble gates
+        prematurely.  Once all items are collected the cost drops to 1 (plain BFS),
+        guiding the agent directly to the finish tile.
 
         Used by observation preprocessor to create the finish-critical path channel.
         Returns empty set if finish is unreachable or no finish exists.
@@ -980,33 +990,44 @@ class BobbyCarrotEnv:
             return set()
 
         start = self.bobby.coord_src
-        # BFS to find shortest path, tracking predecessors
-        visited: Dict[Tuple[int, int], Optional[Tuple[int, int]]] = {start: None}
-        queue: deque[Tuple[int, int]] = deque([start])
+        # High crumble cost while items remain so the path channel discourages
+        # the agent from treating a crumble gate as a shortcut to the finish.
+        crumble_cost = 20 if self.target_positions else 1
+
+        # Dijkstra — degrades to BFS when crumble_cost == 1
+        best_dist: Dict[Tuple[int, int], int] = {start: 0}
+        predecessor: Dict[Tuple[int, int], Optional[Tuple[int, int]]] = {start: None}
+        heap: list[Tuple[int, Tuple[int, int]]] = [(0, start)]
         found_target: Optional[Tuple[int, int]] = None
 
-        while queue and found_target is None:
-            cx, cy = queue.popleft()
+        while heap and found_target is None:
+            dist, (cx, cy) = heapq.heappop(heap)
+            if (cx, cy) in self.finish_positions:
+                found_target = (cx, cy)
+                break
+            if dist > best_dist.get((cx, cy), float('inf')):
+                continue
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nx, ny = cx + dx, cy + dy
-                if 0 <= nx < 16 and 0 <= ny < 16 and (nx, ny) not in visited:
+                if 0 <= nx < 16 and 0 <= ny < 16:
                     tile = self.map_info.data[nx + ny * 16]
                     if tile >= 18 and tile != 31 and tile != 46:
-                        visited[(nx, ny)] = (cx, cy)
-                        if (nx, ny) in self.finish_positions:
-                            found_target = (nx, ny)
-                            break
-                        queue.append((nx, ny))
+                        edge_cost = crumble_cost if tile == 30 else 1
+                        new_dist = dist + edge_cost
+                        if new_dist < best_dist.get((nx, ny), float('inf')):
+                            best_dist[(nx, ny)] = new_dist
+                            predecessor[(nx, ny)] = (cx, cy)
+                            heapq.heappush(heap, (new_dist, (nx, ny)))
 
         if found_target is None:
             return set()
 
-        # Trace back path
+        # Trace back path via predecessor map
         path_tiles: set[Tuple[int, int]] = set()
         cur: Optional[Tuple[int, int]] = found_target
         while cur is not None:
             path_tiles.add(cur)
-            cur = visited.get(cur)
+            cur = predecessor.get(cur)
         return path_tiles
 
     @staticmethod

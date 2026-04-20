@@ -272,16 +272,22 @@ def train_ppo(
                 if len(level_success_history[current_level]) > _LEVEL_HISTORY_WINDOW * 2:
                     level_success_history[current_level] = level_success_history[current_level][-_LEVEL_HISTORY_WINDOW:]
 
-                # Weighted level sampling: failing levels get more practice
-                # (inverse-success weighting — standard curriculum technique)
+                # Weighted level sampling: failing levels get more practice.
+                # Mastered levels (≥75% success) are protected with a floor of 0.40
+                # so they stay practiced even when L4/L5 are failing hard.
                 weights = []
                 for lvl in active_levels:
                     history = level_success_history.get(lvl, [])
                     if len(history) < 5:
-                        w = 2.0  # High weight for under-explored levels
+                        w = 2.0  # High weight for under-explored new levels
                     else:
                         recent_success = float(np.mean(history[-_LEVEL_HISTORY_WINDOW:]))
-                        w = max(0.2, 1.0 - recent_success)  # More weight to failing levels
+                        if recent_success >= 0.75:
+                            w = 0.40  # Mastery floor — never starve a learned level
+                        elif recent_success >= 0.50:
+                            w = max(0.35, 1.0 - recent_success)
+                        else:
+                            w = max(0.50, 1.0 - recent_success)
                     weights.append(w)
                 w_arr = np.array(weights)
                 w_arr = w_arr / w_arr.sum()
@@ -418,20 +424,26 @@ def train_ppo(
             csv_handle.flush()
 
         # ── Curriculum Promotion ──────────────────────────────
-        if train_config.curriculum and len(curriculum_window) >= train_config.curriculum_promotion_window:
-            rolling_success = float(np.mean(curriculum_window))
-            if (
-                rolling_success >= train_config.curriculum_promotion_threshold
-                and len(active_levels) < len(all_train_levels)
-            ):
-                n_add = min(train_config.curriculum_add_levels, len(all_train_levels) - len(active_levels))
-                old_count = len(active_levels)
-                active_levels = all_train_levels[:old_count + n_add]
-                curriculum_window.clear()
-                print(
-                    f"[PPO] Curriculum promotion: {old_count} -> {len(active_levels)} levels "
-                    f"(rolling_success={rolling_success:.2%})"
-                )
+        # Gate: unlock next level only when the current highest active level
+        # has reached 70% success over its last _LEVEL_HISTORY_WINDOW episodes.
+        # Add exactly ONE level at a time to avoid flooding training with
+        # multiple failing levels simultaneously.
+        if train_config.curriculum and len(active_levels) < len(all_train_levels):
+            highest_active = active_levels[-1]
+            history_highest = level_success_history.get(highest_active, [])
+            if len(history_highest) >= _LEVEL_HISTORY_WINDOW:
+                highest_success = float(np.mean(history_highest[-_LEVEL_HISTORY_WINDOW:]))
+                if highest_success >= 0.70:
+                    old_count = len(active_levels)
+                    active_levels = all_train_levels[:old_count + 1]
+                    new_lvl = active_levels[-1]
+                    if new_lvl not in level_success_history:
+                        level_success_history[new_lvl] = []
+                    curriculum_window.clear()
+                    print(
+                        f"[PPO] Curriculum promotion: {old_count} -> {len(active_levels)} levels "
+                        f"({highest_active[0]}{highest_active[1]} success={highest_success:.2%})"
+                    )
 
         # ── Checkpointing ─────────────────────────────────────
         if total_timesteps % train_config.checkpoint_every < ppo_config.rollout_length:
