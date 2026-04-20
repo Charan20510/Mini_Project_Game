@@ -11,7 +11,7 @@ Includes:
 from __future__ import annotations
 
 import math
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -24,27 +24,32 @@ import torch.nn.functional as F
 # ---------------------------------------------------------------------------
 
 # Tile category mapping (must match rl_env.py tile IDs)
-_NUM_OBS_CHANNELS = 14  # 12 tile channels + path trace + finish-critical path
+_NUM_OBS_CHANNELS = 19  # 17 semantic tile channels + path trace + finish-critical path
 
 
 class ObservationPreprocessor:
     """Converts raw 16x16 tile-grid observations into multi-channel float tensors.
 
-    Channel layout (14 channels total):
-        0: Walkable ground  (tile >= 18)
-        1: Carrot            (tile == 19)
-        2: Egg               (tile == 45)
-        3: Finish tile       (tile == 44)
-        4: Crumble tile      (tile == 30, active crumble)
-        5: Hazard / collapsed (tile == 31 or 46)
-        6: Key pickup        (tile in {32, 34, 36})
-        7: Door locked       (tile in {33, 35, 37})
-        8: Agent position    (1 at agent pos)
-        9: Inventory info    (remaining targets normalised + key flags)
-       10: Switch/conveyor   (tiles 22-29, 38-43) — mechanically important
-       11: Visited-safe      (tile == 20, previously-a-carrot, now walkable)
-       12: Path trace history (recent positions visited)
-       13: Finish-critical path (BFS shortest path from agent to finish tile)
+    Channel layout (19 channels total):
+        0:  Walkable ground       (tile >= 18)
+        1:  Carrot                (tile == 19)
+        2:  Egg                   (tile == 45)
+        3:  Finish tile           (tile == 44)
+        4:  Active crumble        (tile == 30)
+        5:  Hazard / collapsed    (tile == 31 or 46)
+        6:  Key pickup            (tile in {32, 34, 36})
+        7:  Door locked           (tile in {33, 35, 37})
+        8:  Agent position        (1 at agent pos)
+        9:  Inventory info        (remaining targets normalised + key flags)
+        10: Conveyor forces LEFT  (tile == 40)   ← directional semantics split
+        11: Conveyor forces RIGHT (tile == 41)
+        12: Conveyor forces UP    (tile == 42)
+        13: Conveyor forces DOWN  (tile == 43)
+        14: Arrow / bi-dir conv   (tiles 24-29)  ← restricts entry direction
+        15: Switch                (tiles 22, 23, 38, 39)  ← global state flip
+        16: Visited-safe          (tile == 20, previously-a-carrot, now walkable)
+        17: Path trace history    (recent positions visited)
+        18: Finish-critical path  (BFS shortest path from agent to finish tile)
     """
 
     def __init__(self, device: torch.device) -> None:
@@ -131,13 +136,30 @@ class ObservationPreprocessor:
                     channels[6, y, x] = 1.0
                 if tile in (33, 35, 37):
                     channels[7, y, x] = 1.0
-                # Channel 10: Switch/conveyor tiles
-                if tile in (22, 23, 24, 25, 26, 27, 28, 29, 38, 39, 40, 41, 42, 43):
-                    channels[10, y, x] = 1.0
-                # Channel 11: Visited-safe tiles (only tile==20; tile==46 is
-                # already on channel 5 as a hazard — avoid duplicate signal).
+                # Directional conveyor channels (10-13) — each direction is a
+                # separate semantic plane so the CNN can learn "this tile forces
+                # LEFT" independently from "this tile forces RIGHT".
+                if tile == 40:
+                    channels[10, y, x] = 1.0   # forces LEFT
+                if tile == 41:
+                    channels[11, y, x] = 1.0   # forces RIGHT
+                if tile == 42:
+                    channels[12, y, x] = 1.0   # forces UP
+                if tile == 43:
+                    channels[13, y, x] = 1.0   # forces DOWN
+                # Arrow & bi-directional conveyor tiles (24-29): restrict which
+                # directions are legal to enter/exit — grouped as one channel
+                # since the shared semantics are "directional restriction".
+                if tile in (24, 25, 26, 27, 28, 29):
+                    channels[14, y, x] = 1.0
+                # Switch tiles (22, 23, 38, 39): stepping triggers a global
+                # map-state flip — distinct from directional mechanics.
+                if tile in (22, 23, 38, 39):
+                    channels[15, y, x] = 1.0
+                # Visited-safe: tile==20 means a carrot was collected here.
+                # tile==46 is already on channel 5 (hazard) — no duplication.
                 if tile == 20:
-                    channels[11, y, x] = 1.0
+                    channels[16, y, x] = 1.0
 
         # Agent position channel
         if 0 <= px < 16 and 0 <= py < 16:
@@ -152,11 +174,11 @@ class ObservationPreprocessor:
         channels[9, 0:8, 0:8] = key_gray * 0.33 + key_yellow * 0.33 + key_red * 0.34
         channels[9, 8:16, 8:16] = remaining
 
-        # Channel 12: Path Trace History
-        channels[12, :, :] = path_grid.reshape((16, 16)).astype(np.float32)
+        # Channel 17: Path Trace History
+        channels[17, :, :] = path_grid.reshape((16, 16)).astype(np.float32)
 
-        # Channel 13: Finish-Critical Path (BFS shortest path to finish)
-        channels[13, :, :] = finish_path_grid.reshape((16, 16)).astype(np.float32)
+        # Channel 18: Finish-Critical Path (BFS shortest path to finish)
+        channels[18, :, :] = finish_path_grid.reshape((16, 16)).astype(np.float32)
 
         return torch.from_numpy(channels).to(self.device)
 

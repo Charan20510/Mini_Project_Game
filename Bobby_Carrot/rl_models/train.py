@@ -43,11 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-icm", action="store_false", dest="icm", help="Disable ICM curiosity module")
 
     # Training config
-    p.add_argument("--timesteps", type=int, default=500_000, help="Total training timesteps")
+    p.add_argument("--timesteps", type=int, default=3_000_000, help="Total training timesteps")
     p.add_argument("--seed", type=int, default=42, help="Random seed")
     p.add_argument("--device", type=str, default="auto", help="Device: auto, cuda, cpu")
     p.add_argument("--n-envs", type=int, default=4, help="Number of parallel envs (PPO)")
-    p.add_argument("--max-steps", type=int, default=1000, help="Max steps per episode")
+    p.add_argument("--max-steps", type=int, default=1500, help="Max steps per episode")
 
     # Curriculum
     p.add_argument("--curriculum", action="store_true", default=True, help="Enable curriculum learning")
@@ -55,25 +55,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reset-policy-head", action="store_true", default=True,
                    help="Reset policy head when resuming (for phase transfer)")
     p.add_argument("--no-reset-policy-head", action="store_false", dest="reset_policy_head")
-    p.add_argument("--curriculum-start", type=int, default=5, help="Initial number of levels in curriculum")
-    p.add_argument("--curriculum-threshold", type=float, default=0.7, help="Success rate to promote")
+    p.add_argument("--curriculum-start", type=int, default=5, help="Initial number of levels in curriculum (1-N)")
+    p.add_argument("--curriculum-threshold", type=float, default=0.55, help="Success rate to promote")
 
     # Logging
     p.add_argument("--log-dir", type=str, default="logs", help="Log directory")
     p.add_argument("--log-interval", type=int, default=2000, help="Log every N timesteps")
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Checkpoint directory")
-    p.add_argument("--checkpoint-every", type=int, default=50_000, help="Checkpoint every N timesteps")
-    p.add_argument("--eval-interval", type=int, default=25_000, help="Eval every N timesteps")
+    p.add_argument("--checkpoint-every", type=int, default=100_000, help="Checkpoint every N timesteps")
+    p.add_argument("--eval-interval", type=int, default=50_000, help="Eval every N timesteps")
 
     # PPO-specific
     ppo_group = p.add_argument_group("PPO")
     ppo_group.add_argument("--ppo-lr", type=float, default=3e-4, help="PPO learning rate")
     ppo_group.add_argument("--ppo-clip", type=float, default=0.2, help="PPO clip ratio")
     ppo_group.add_argument("--ppo-epochs", type=int, default=4, help="PPO update epochs")
-    ppo_group.add_argument("--ppo-rollout", type=int, default=2048, help="PPO rollout length")
-    ppo_group.add_argument("--ppo-minibatch", type=int, default=64, help="PPO minibatch size")
+    ppo_group.add_argument("--ppo-rollout", type=int, default=4096, help="PPO rollout length")
+    ppo_group.add_argument("--ppo-minibatch", type=int, default=128, help="PPO minibatch size")
     ppo_group.add_argument("--ppo-entropy", type=float, default=0.15, help="Entropy coefficient (high for complex levels)")
-    ppo_group.add_argument("--ppo-entropy-min", type=float, default=0.02, help="Minimum entropy coeff (schedule floor)")
+    ppo_group.add_argument("--ppo-entropy-min", type=float, default=0.04, help="Minimum entropy coeff (schedule floor)")
     ppo_group.add_argument("--ppo-gamma", type=float, default=0.99, help="Discount factor")
     ppo_group.add_argument("--ppo-gae-lambda", type=float, default=0.95, help="GAE lambda")
 
@@ -81,11 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
     rb_group = p.add_argument_group("Rainbow DQN")
     rb_group.add_argument("--rainbow-lr", type=float, default=6.25e-5, help="Rainbow learning rate")
     rb_group.add_argument("--rainbow-batch", type=int, default=32, help="Rainbow batch size")
-    rb_group.add_argument("--rainbow-buffer", type=int, default=100_000, help="Replay buffer size")
-    rb_group.add_argument("--rainbow-n-step", type=int, default=3, help="N-step returns")
+    rb_group.add_argument("--rainbow-buffer", type=int, default=200_000, help="Replay buffer size")
+    rb_group.add_argument("--rainbow-n-step", type=int, default=5, help="N-step returns")
     rb_group.add_argument("--rainbow-atoms", type=int, default=51, help="C51 atom count")
-    rb_group.add_argument("--rainbow-target-update", type=int, default=1000, help="Target net update freq")
-    rb_group.add_argument("--rainbow-learning-starts", type=int, default=2000, help="Random steps before learning")
+    rb_group.add_argument("--rainbow-target-update", type=int, default=2000, help="Target net update freq")
+    rb_group.add_argument("--rainbow-learning-starts", type=int, default=5000, help="Random steps before learning")
 
     # ICM-specific
     icm_group = p.add_argument_group("ICM")
@@ -94,13 +94,13 @@ def build_parser() -> argparse.ArgumentParser:
     icm_group.add_argument("--icm-feature-dim", type=int, default=128, help="ICM feature dimension")
 
     # Level config
-    p.add_argument("--train-normal-max", type=int, default=7,
+    p.add_argument("--train-normal-max", type=int, default=25,
                    help="Train on normal levels 1..N")
     p.add_argument("--train-egg-max", type=int, default=0,
                    help="Train on egg levels 1..N (0 to disable)")
-    p.add_argument("--test-normal-start", type=int, default=8,
+    p.add_argument("--test-normal-start", type=int, default=26,
                    help="Test normal levels start")
-    p.add_argument("--test-normal-end", type=int, default=10,
+    p.add_argument("--test-normal-end", type=int, default=30,
                    help="Test normal levels end")
     p.add_argument("--test-egg-start", type=int, default=0,
                    help="Test egg levels start (0 to disable)")

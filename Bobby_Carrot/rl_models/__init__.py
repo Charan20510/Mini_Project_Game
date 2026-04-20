@@ -10,6 +10,7 @@ from .networks import CNNEncoder, ObservationPreprocessor
 from .ppo import PPOAgent
 from .rainbow import RainbowAgent
 from .icm import ICMModule
+from .mcts_eval import MCTSEvaluator
 
 __all__ = [
     "PPOConfig",
@@ -22,4 +23,5 @@ __all__ = [
     "PPOAgent",
     "RainbowAgent",
     "ICMModule",
+    "MCTSEvaluator",
 ]
