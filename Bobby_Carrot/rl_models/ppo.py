@@ -519,30 +519,37 @@ def train_ppo(
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), ppo_config.max_grad_norm)
-                optimizer.step()
+                # Guard: skip weight update if loss is non-finite to prevent NaN
+                # weights from contaminating the encoder on subsequent minibatches.
+                if torch.isfinite(loss):
+                    optimizer.step()
+                else:
+                    print(f"[PPO] WARNING: non-finite loss={loss.item():.4f} "
+                          f"at t={total_timesteps} — skipping optimizer step")
+                    optimizer.zero_grad()
 
-                # P5: EMA-update the teacher after each student step.
-                with torch.no_grad():
-                    for t_param, s_param in zip(teacher.parameters(), agent.parameters()):
-                        t_param.data.mul_(_teacher_decay).add_(
-                            s_param.data, alpha=1.0 - _teacher_decay
-                        )
+                # P5: EMA-update the teacher only when the student step was valid.
+                if torch.isfinite(loss):
+                    with torch.no_grad():
+                        for t_param, s_param in zip(teacher.parameters(), agent.parameters()):
+                            t_param.data.mul_(_teacher_decay).add_(
+                                s_param.data, alpha=1.0 - _teacher_decay
+                            )
 
-                total_kl_teacher += float(kl_teacher.item())
+                total_kl_teacher += float(kl_teacher.item()) if torch.isfinite(kl_teacher) else 0.0
 
-                # ICM update
+                # ICM update — guard against NaN features from a bad PPO step.
                 if icm_module is not None and icm_optimizer is not None:
                     enc_obs = agent.encoder(b_obs).detach()
-                    # Need next obs — approximate: shift by 1 within batch
-                    # For proper ICM, we'd store next_obs in rollout; using detached encoder
-                    if enc_obs.size(0) > 1:
+                    if enc_obs.size(0) > 1 and torch.isfinite(enc_obs).all():
                         icm_loss = icm_module.compute_loss(
                             enc_obs[:-1], enc_obs[1:],
                             b_actions[:-1],
                         )
-                        icm_optimizer.zero_grad()
-                        icm_loss.backward()
-                        icm_optimizer.step()
+                        if torch.isfinite(icm_loss):
+                            icm_optimizer.zero_grad()
+                            icm_loss.backward()
+                            icm_optimizer.step()
 
                 # Track metrics
                 with torch.no_grad():
