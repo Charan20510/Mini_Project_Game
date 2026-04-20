@@ -73,8 +73,15 @@ class RewardConfig:
     # --- Phase 2 additions ---
     collection_progress_scale: float = 0.5       # Last carrot worth (1 + scale)× base
     strategic_crumble_bonus: float = 2.0          # Bonus for crossing crumble AFTER clearing source section
-    crumble_bfs_penalty: int = 2                  # Extra BFS cost per crumble tile traversal (was 5, reduced to avoid repelling agent from mandatory gates)
-    crumble_approach_bonus: float = 0.3           # Bonus for moving toward crumble gate when current section has 0 targets
+    crumble_bfs_penalty: int = 3                  # Extra BFS cost per crumble tile traversal (raised to discourage short-cut crossings through wrong crumble)
+    crumble_approach_bonus: float = 0.1           # Bonus for moving toward crumble gate when current section has 0 targets (reduced; was symmetric noise on L4 start)
+    # --- Phase 3 additions (P1+P2: finish-orphan detection) ---
+    # When the agent crosses a crumble and lands in the crumble-free component
+    # that contains the FINISH tile while other components still hold uncollected
+    # targets, this is the "L4 two-crumble trap": the agent reaches the finish
+    # chamber early and cannot return after the remaining chambers collapse.
+    finish_orphan_penalty: float = -4.0           # Flat penalty for the trap crossing
+    finish_orphan_per_item: float = -0.5          # Additional penalty per orphaned uncollected target
 
 
 class _EnvRenderAssets:
@@ -297,26 +304,49 @@ class BobbyCarrotEnv:
                 info["distance_delta"] = distance_delta
                 reward += self.reward_config.distance_delta_scale * distance_delta
 
-            # --- Crumble approach bonus ---
+            # --- Crumble approach bonus (P3 gated) ---
             # When the current section has 0 reachable targets (all behind
             # crumble gates), give a bonus for moving toward the nearest
-            # crumble gate.  This provides a positive signal in otherwise
+            # crumble gate.  Provides a positive signal in otherwise
             # reward-barren start corridors (Level 4/5).
+            # P3 gate: only reward approach to crumbles whose immediate
+            # neighbours include at least one uncollected target AND whose
+            # crossing would NOT drop the agent directly into the finish
+            # component while orphans remain (the L4 (5,10) trap).
             if not now_all_collected and self.target_positions:
                 local_targets = self._get_reachable_targets_from(after_pos)
                 if len(local_targets) == 0:
-                    # Check if we moved closer to a crumble gate
-                    crumble_positions = set()
+                    safe_crumbles: set[Tuple[int, int]] = set()
                     for yy in range(16):
                         for xx in range(16):
-                            if self.map_info.data[xx + yy * 16] == 30:
-                                crumble_positions.add((xx, yy))
-                    if crumble_positions:
+                            if self.map_info.data[xx + yy * 16] != 30:
+                                continue
+                            has_target_neighbour = False
+                            leads_to_finish_trap = False
+                            for ddx, ddy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                                nx, ny = xx + ddx, yy + ddy
+                                if not (0 <= nx < 16 and 0 <= ny < 16):
+                                    continue
+                                ntile = self.map_info.data[nx + ny * 16]
+                                if ntile in (19, 45):
+                                    has_target_neighbour = True
+                                # A crumble edge whose non-crumble side sits in
+                                # the same component as the finish AND there
+                                # are targets elsewhere is a trap shortcut.
+                                if (ntile >= 18 and ntile != 30
+                                        and ntile != 31 and ntile != 46):
+                                    if self._finish_in_component((nx, ny)):
+                                        reach = self._get_reachable_targets_from((nx, ny))
+                                        if len(self.target_positions) - len(reach) > 0:
+                                            leads_to_finish_trap = True
+                            if has_target_neighbour and not leads_to_finish_trap:
+                                safe_crumbles.add((xx, yy))
+                    if safe_crumbles:
                         dist_crumble_before = self._bfs_shortest_distance(
-                            before_pos, crumble_positions, penalize_crumble=False
+                            before_pos, safe_crumbles, penalize_crumble=False
                         )
                         dist_crumble_after = self._bfs_shortest_distance(
-                            after_pos, crumble_positions, penalize_crumble=False
+                            after_pos, safe_crumbles, penalize_crumble=False
                         )
                         if (dist_crumble_before is not None
                                 and dist_crumble_after is not None
@@ -393,11 +423,32 @@ class BobbyCarrotEnv:
                 # if empty, this was a clean/strategic crossing.
                 source_targets = self._get_reachable_targets_from(before_pos, exclude_pos=after_pos)
                 if len(source_targets) == 0:
-                    reward += self.reward_config.strategic_crumble_bonus
+                    # P1+P2: finish-orphan trap detection.
+                    # If the agent now sits in the crumble-free component that
+                    # contains the FINISH tile, and there are still uncollected
+                    # targets in *other* components, the crossing traps the
+                    # agent near the finish while the rest of the map must still
+                    # be cleared. Penalize proportionally to the orphan count.
+                    agent_component_targets = self._get_reachable_targets_from(after_pos)
+                    finish_in_agent_comp = self._finish_in_component(after_pos)
+                    total_remaining = len(self.target_positions)
+                    orphan_count = total_remaining - len(agent_component_targets)
+                    if finish_in_agent_comp and orphan_count > 0:
+                        reward += self.reward_config.finish_orphan_penalty
+                        reward += (self.reward_config.finish_orphan_per_item
+                                   * orphan_count)
+                    else:
+                        reward += self.reward_config.strategic_crumble_bonus
                 else:
                     # Left items behind in source section but they're still reachable
                     # via other paths — apply crossing penalty without termination.
                     reward += self.reward_config.crumble_crossing_penalty
+                    # Additional finish-orphan check even when source still has
+                    # items: same trap pattern can appear mid-map.
+                    if (self._finish_in_component(after_pos)
+                            and len(source_targets) > 0):
+                        reward += (self.reward_config.finish_orphan_per_item
+                                   * len(source_targets))
 
             # Reset distance tracking for the new section so the agent
             # isn't penalised for the distance jump after crossing a gate.
@@ -913,6 +964,35 @@ class BobbyCarrotEnv:
                             best_dist[(nx, ny)] = new_dist
                             heapq.heappush(heap, (new_dist, (nx, ny)))
         return None
+
+    def _finish_in_component(self, pos: Tuple[int, int]) -> bool:
+        """Return True if a finish tile is reachable from pos WITHOUT traversing
+        any crumble (tile 30) or hazard.
+
+        Used by the finish-orphan trap check: after a crumble collapse, if the
+        agent's crumble-free component contains the finish tile while other
+        components still have uncollected targets, we are in the L4 trap
+        pattern. The check deliberately treats active crumbles as walls so it
+        reflects the worst-case topology after any further collapses.
+        """
+        assert self.map_info is not None
+        if not self.finish_positions:
+            return False
+
+        visited: set[Tuple[int, int]] = {pos}
+        queue: deque[Tuple[int, int]] = deque([pos])
+        while queue:
+            cx, cy = queue.popleft()
+            if (cx, cy) in self.finish_positions:
+                return True
+            for ddx, ddy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = cx + ddx, cy + ddy
+                if 0 <= nx < 16 and 0 <= ny < 16 and (nx, ny) not in visited:
+                    tile = self.map_info.data[nx + ny * 16]
+                    if tile >= 18 and tile != 30 and tile != 31 and tile != 46:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+        return False
 
     def _get_reachable_targets_from(
         self, pos: Tuple[int, int], exclude_pos: Optional[Tuple[int, int]] = None

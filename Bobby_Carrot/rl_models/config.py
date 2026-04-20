@@ -37,7 +37,7 @@ class TrainingConfig:
     curriculum: bool = True
     curriculum_start_levels: int = 5      # Start with levels 1-5
     curriculum_promotion_window: int = 120
-    curriculum_promotion_threshold: float = 0.55  # 55% success to promote (25 levels is harder)
+    curriculum_promotion_threshold: float = 0.40  # P4: lowered from 0.55 so L3→L4 can advance
     curriculum_add_levels: int = 3        # Add 3 levels per promotion
     # Anti-forgetting: keep mastered levels practiced even when new levels are
     # failing hard, and require 2 consecutive windows above threshold before
@@ -46,10 +46,22 @@ class TrainingConfig:
     curriculum_mastery_floor: float = 0.55  # Min sampling weight for a mastered (≥75%) level
     curriculum_min_quota: float = 0.10    # Every active level must get ≥ this fraction (10% with 25 levels)
     curriculum_dwell_windows: int = 2     # Highest level must stay ≥ threshold this many windows
+    # P4 fallback promotion: if the highest level has plateaued above a softer
+    # threshold for this many windows without reaching the main threshold,
+    # promote anyway so L4/L5 still get training exposure.
+    curriculum_fallback_threshold: float = 0.20
+    curriculum_fallback_windows: int = 4
     # On each promotion, boost entropy_coeff for N steps to force exploration
     # on the newly-added levels before the LR schedule tightens it.
     entropy_boost_steps: int = 80_000
     entropy_boost_multiplier: float = 2.0
+    # P6 regression-triggered entropy boost: if any active level's rolling
+    # success drops by >= this from its recorded max, re-arm the entropy boost.
+    regression_trigger_drop: float = 0.25
+    # P5 EMA teacher + KL anti-forgetting.
+    teacher_ema_decay: float = 0.995       # Teacher lags student
+    teacher_kl_coef: float = 0.02          # Global KL(student || teacher) weight
+    teacher_kl_mastery_coef: float = 0.10  # Extra weight when any level is mastered (≥75%)
     # Cosine decay of LR over the last fraction of training (0.0 disables).
     lr_decay_final_fraction: float = 0.25  # Decay over last 25%
     lr_decay_min_multiplier: float = 0.3   # LR floor = lr * 0.3
@@ -88,7 +100,7 @@ class PPOConfig:
     n_epochs: int = 4
     minibatch_size: int = 128    # Scaled with rollout length
     normalize_advantages: bool = True
-    entropy_min: float = 0.04    # Floor that keeps exploration alive on hard late levels
+    entropy_min: float = 0.08    # P6: raised from 0.04 — late levels need sustained exploration
 
     # Network architecture
     cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64, 64])

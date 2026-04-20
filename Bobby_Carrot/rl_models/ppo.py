@@ -11,7 +11,6 @@ Implements:
 
 from __future__ import annotations
 
-import copy
 import csv
 import time
 from pathlib import Path
@@ -25,6 +24,45 @@ import torch.optim as optim
 from .config import PPOConfig, TrainingConfig, ICMConfig, LevelConfig
 from .networks import CNNEncoder, ObservationPreprocessor, PolicyHead, ValueHead
 from .buffers import RolloutBuffer
+
+
+# ---------------------------------------------------------------------------
+# P7 helper: running mean/std for return normalization
+# ---------------------------------------------------------------------------
+
+class RunningMeanStd:
+    """Welford's online algorithm for batch-updated running mean/variance.
+
+    Used to normalize GAE returns so the critic's target scale stays near 1
+    across levels with wildly different return magnitudes (L1 ~60 vs L4 ~400).
+    """
+
+    def __init__(self, epsilon: float = 1e-4) -> None:
+        self.mean = 0.0
+        self.var = 1.0
+        self.count = epsilon
+
+    def update(self, x: np.ndarray) -> None:
+        if x.size == 0:
+            return
+        batch_mean = float(x.mean())
+        batch_var = float(x.var())
+        batch_count = x.size
+
+        delta = batch_mean - self.mean
+        total = self.count + batch_count
+
+        new_mean = self.mean + delta * batch_count / total
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + delta * delta * self.count * batch_count / total
+        self.mean = new_mean
+        self.var = m2 / total
+        self.count = total
+
+    @property
+    def std(self) -> float:
+        return float(np.sqrt(max(self.var, 1e-8)))
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +179,19 @@ def train_ppo(
     optimizer = optim.Adam(agent.parameters(), lr=ppo_config.lr, eps=1e-5)
     preprocessor = ObservationPreprocessor(device)
 
+    # P5: EMA teacher snapshot for anti-forgetting via KL regularization.
+    teacher = PPOAgent(ppo_config).to(device)
+    teacher.load_state_dict(agent.state_dict())
+    for p in teacher.parameters():
+        p.requires_grad_(False)
+    teacher.eval()
+    _teacher_decay = float(train_config.teacher_ema_decay)
+    _teacher_kl_coef = float(train_config.teacher_kl_coef)
+    _teacher_kl_mastery_coef = float(train_config.teacher_kl_mastery_coef)
+
+    # P7: running normalization of returns for value-loss stability.
+    return_rms = RunningMeanStd()
+
     # Optional ICM
     icm_module = None
     icm_optimizer = None
@@ -221,6 +272,14 @@ def train_ppo(
     # a minimum quota for mastered levels, and a dwell counter for promotion.
     promotion_dwell_counter = 0
     last_entropy_boost_until = 0  # total_timesteps at which the boost expires
+
+    # P4 fallback promotion: tracks consecutive windows above the softer
+    # fallback threshold when the main promotion threshold isn't met.
+    fallback_dwell_counter = 0
+    # P6 regression-triggered entropy boost: remember each active level's max
+    # observed windowed success; if success drops by >= regression_trigger_drop
+    # the entropy boost is re-armed.
+    level_success_max: Dict[Tuple[str, int], float] = {}
 
     print(f"[PPO] Starting training for {train_config.total_timesteps} timesteps")
     print(f"[PPO] Active levels: {len(active_levels)} / {len(all_train_levels)}")
@@ -335,12 +394,32 @@ def train_ppo(
 
         rollout.compute_gae(last_value, done)
 
+        # P7: update running-return stats from this rollout's returns so the
+        # critic learns against a normalized target.
+        return_rms.update(rollout.returns[:rollout.ptr])
+        return_std = return_rms.std
+
+        # P5: detect whether any active level is "mastered" (≥75% recent
+        # success) — if so, strengthen the KL anchor to the teacher to guard
+        # against catastrophic forgetting during hard-level training.
+        has_mastered_level = False
+        for lvl in active_levels:
+            hist = level_success_history.get(lvl, [])
+            if len(hist) >= 20:
+                if float(np.mean(hist[-_LEVEL_HISTORY_WINDOW:])) >= 0.75:
+                    has_mastered_level = True
+                    break
+        active_kl_coef = _teacher_kl_coef + (
+            _teacher_kl_mastery_coef if has_mastered_level else 0.0
+        )
+
         # ── PPO Update ────────────────────────────────────────
         agent.train()
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
         total_clip_frac = 0.0
+        total_kl_teacher = 0.0
         update_count = 0
 
         for _epoch in range(ppo_config.n_epochs):
@@ -356,9 +435,19 @@ def train_ppo(
                 if ppo_config.normalize_advantages and b_advantages.numel() > 1:
                     b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
 
-                log_probs, values, entropy = agent.evaluate_actions(
-                    b_obs, b_actions, action_masks=b_action_masks,
-                )
+                # P7: normalize returns the critic regresses against. Division
+                # by running std keeps the value head's target near unit scale
+                # even as the reward distribution shifts across the curriculum.
+                b_returns_norm = b_returns / max(return_std, 1e-3)
+
+                # Shared encoder forward once, then split into heads so both
+                # the student *and* the teacher can run through the same
+                # features for KL regularization without a second forward.
+                features = agent.encoder(b_obs)
+                dist = agent.policy(features, action_mask=b_action_masks)
+                values = agent.value(features)
+                log_probs = dist.log_prob(b_actions)
+                entropy = dist.entropy()
 
                 # Clipped surrogate
                 ratio = (log_probs - b_old_log_probs).exp()
@@ -366,8 +455,32 @@ def train_ppo(
                 surr2 = torch.clamp(ratio, 1.0 - ppo_config.clip_ratio, 1.0 + ppo_config.clip_ratio) * b_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Value loss (Huber loss prevents exploding gradients)
-                value_loss = nn.functional.huber_loss(values, b_returns)
+                # P7: Huber loss on normalized returns. Scaled-back variant of
+                # the target remains in b_returns for logging, but the critic
+                # now learns a unit-scale signal.
+                value_loss = nn.functional.huber_loss(
+                    values / max(return_std, 1e-3), b_returns_norm
+                )
+
+                # P5: KL(student || teacher) anchor. Teacher sees the same
+                # features via its own encoder; we compute logits on the raw
+                # observations to avoid leaking student features into the
+                # teacher path.
+                with torch.no_grad():
+                    t_features = teacher.encoder(b_obs)
+                    t_dist = teacher.policy(t_features, action_mask=b_action_masks)
+                    t_log_probs_all = torch.log_softmax(t_dist.logits, dim=-1)
+                s_log_probs_all = torch.log_softmax(dist.logits, dim=-1)
+                s_probs_all = s_log_probs_all.exp()
+                # Mask invalid actions (where probs are 0 and log-probs are -inf)
+                # to keep the KL finite and well-defined.
+                kl_per_action = s_probs_all * (s_log_probs_all - t_log_probs_all)
+                kl_per_action = torch.where(
+                    torch.isfinite(kl_per_action),
+                    kl_per_action,
+                    torch.zeros_like(kl_per_action),
+                )
+                kl_teacher = kl_per_action.sum(dim=-1).mean()
 
                 # Entropy bonus with linear schedule
                 entropy_loss = -entropy.mean()
@@ -400,12 +513,22 @@ def train_ppo(
                     policy_loss
                     + ppo_config.value_coeff * value_loss
                     + current_entropy_coeff * entropy_loss
+                    + active_kl_coef * kl_teacher
                 )
 
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), ppo_config.max_grad_norm)
                 optimizer.step()
+
+                # P5: EMA-update the teacher after each student step.
+                with torch.no_grad():
+                    for t_param, s_param in zip(teacher.parameters(), agent.parameters()):
+                        t_param.data.mul_(_teacher_decay).add_(
+                            s_param.data, alpha=1.0 - _teacher_decay
+                        )
+
+                total_kl_teacher += float(kl_teacher.item())
 
                 # ICM update
                 if icm_module is not None and icm_optimizer is not None:
@@ -440,11 +563,13 @@ def train_ppo(
             avg_cf = total_clip_frac / max(1, update_count)
             elapsed = time.time() - start_time
 
+            avg_kl = total_kl_teacher / max(1, update_count)
             print(
                 f"[PPO] t={total_timesteps:>7d} | ep={episode_count:>4d} | "
                 f"avg_r={avg_reward:>7.2f} | success={avg_success:>5.2%} | "
                 f"p_loss={avg_pl:.4f} | v_loss={avg_vl:.4f} | "
                 f"ent={avg_ent:.4f} | clip={avg_cf:.3f} | "
+                f"kl_t={avg_kl:.4f} | ret_std={return_std:.2f} | "
                 f"levels={len(active_levels)} | {elapsed:.0f}s"
             )
             # Per-level success breakdown (critical for diagnosing which levels stall)
@@ -470,9 +595,14 @@ def train_ppo(
         # has reached threshold success over curriculum_dwell_windows
         # consecutive evaluation windows.  Dwell prevents one lucky window
         # from triggering a premature promotion (Phase 2 L4→L5 pattern).
+        # P4: additionally, a *fallback* promotion fires when the highest
+        # level has stayed above curriculum_fallback_threshold for
+        # curriculum_fallback_windows — so L4/L5 still get training exposure
+        # even if L3 plateaus below the main threshold.
         if train_config.curriculum and len(active_levels) < len(all_train_levels):
             highest_active = active_levels[-1]
             history_highest = level_success_history.get(highest_active, [])
+            promoted = False
             if len(history_highest) >= _LEVEL_HISTORY_WINDOW:
                 highest_success = float(np.mean(history_highest[-_LEVEL_HISTORY_WINDOW:]))
                 if highest_success >= train_config.curriculum_promotion_threshold:
@@ -480,7 +610,16 @@ def train_ppo(
                 else:
                     promotion_dwell_counter = 0
 
-                if promotion_dwell_counter >= train_config.curriculum_dwell_windows:
+                if highest_success >= train_config.curriculum_fallback_threshold:
+                    fallback_dwell_counter += 1
+                else:
+                    fallback_dwell_counter = 0
+
+                main_ready = promotion_dwell_counter >= train_config.curriculum_dwell_windows
+                fallback_ready = (
+                    fallback_dwell_counter >= train_config.curriculum_fallback_windows
+                )
+                if main_ready or fallback_ready:
                     old_count = len(active_levels)
                     active_levels = all_train_levels[:old_count + 1]
                     new_lvl = active_levels[-1]
@@ -488,13 +627,39 @@ def train_ppo(
                         level_success_history[new_lvl] = []
                     curriculum_window.clear()
                     promotion_dwell_counter = 0
-                    # Trigger entropy boost for entropy_boost_steps on the new level.
+                    fallback_dwell_counter = 0
                     last_entropy_boost_until = total_timesteps + train_config.entropy_boost_steps
+                    trigger = "main" if main_ready else "fallback"
                     print(
-                        f"[PPO] Curriculum promotion: {old_count} -> {len(active_levels)} levels "
+                        f"[PPO] Curriculum promotion ({trigger}): {old_count} -> {len(active_levels)} levels "
                         f"({highest_active[0]}{highest_active[1]} success={highest_success:.2%}) "
                         f"| entropy boost active until t={last_entropy_boost_until}"
                     )
+                    promoted = True
+            if promoted:
+                pass  # promotion handled above
+
+        # P6: regression-triggered entropy re-arm.
+        # If any active level's rolling success has dropped by ≥
+        # regression_trigger_drop from its recorded max, re-arm the entropy
+        # boost so exploration can push the policy back off the bad basin.
+        regression_detected = False
+        for lvl in active_levels:
+            hist = level_success_history.get(lvl, [])
+            if len(hist) < _LEVEL_HISTORY_WINDOW:
+                continue
+            recent = float(np.mean(hist[-_LEVEL_HISTORY_WINDOW:]))
+            prev_max = level_success_max.get(lvl, 0.0)
+            if recent > prev_max:
+                level_success_max[lvl] = recent
+            elif prev_max - recent >= train_config.regression_trigger_drop:
+                regression_detected = True
+        if regression_detected and total_timesteps >= last_entropy_boost_until:
+            last_entropy_boost_until = total_timesteps + train_config.entropy_boost_steps
+            print(
+                f"[PPO] Regression detected — re-arming entropy boost until "
+                f"t={last_entropy_boost_until}"
+            )
 
         # ── Checkpointing ─────────────────────────────────────
         if total_timesteps % train_config.checkpoint_every < ppo_config.rollout_length:
@@ -558,7 +723,13 @@ def _run_eval(
     device: torch.device,
     timestep: int,
 ) -> Dict[str, float]:
-    """Run deterministic evaluation on test levels."""
+    """Evaluate on held-out test levels with both greedy and stochastic policies.
+
+    P8: reporting both numbers exposes policies that only *barely* point at the
+    right action (greedy succeeds, stochastic regresses) vs. policies that have
+    learned a robust distribution (both succeed).  If stochastic success is
+    much lower than greedy, the encoder has memorized rather than generalized.
+    """
     import sys
     _here = Path(__file__).resolve().parent.parent.parent
     game_python = _here / "Game_Python"
@@ -567,48 +738,61 @@ def _run_eval(
     from bobby_carrot.rl_env import BobbyCarrotEnv  # type: ignore
 
     agent.eval()
-    total_success = 0
-    total_episodes = 0
-    total_reward = 0.0
-    level_results: List[str] = []
 
-    for kind, num in test_levels:
-        env = BobbyCarrotEnv(
-            map_kind=kind, map_number=num,
-            observation_mode=train_config.observation_mode,
-            include_inventory=True, headless=True,
-            max_steps=train_config.max_steps_per_episode,
-        )
-        level_successes = 0
-        for _ in range(train_config.eval_episodes_per_level):
-            obs_raw = env.reset()
-            done = False
-            ep_reward = 0.0
-            info: Dict[str, object] = {}
-            while not done:
-                obs_t = preprocessor(obs_raw)
-                # Get action mask for eval too
-                mask_np = env.get_valid_actions()
-                mask_t = torch.tensor(mask_np, dtype=torch.bool, device=device)
-                with torch.no_grad():
-                    features = agent.encoder(obs_t.unsqueeze(0))
-                    dist = agent.policy(features, action_mask=mask_t.unsqueeze(0))
-                    action = int(dist.probs.argmax(dim=-1).item())
-                obs_raw, reward, done, info = env.step(action)
-                ep_reward += reward
-            total_reward += ep_reward
-            if info.get("level_completed", False):
-                total_success += 1
-                level_successes += 1
-            total_episodes += 1
-        env.close()
-        level_results.append(f"{kind}-{num}:{level_successes}/{train_config.eval_episodes_per_level}")
+    def _run_mode(stochastic: bool) -> Tuple[float, float, List[str]]:
+        total_success = 0
+        total_episodes = 0
+        total_reward = 0.0
+        level_results: List[str] = []
+        for kind, num in test_levels:
+            env = BobbyCarrotEnv(
+                map_kind=kind, map_number=num,
+                observation_mode=train_config.observation_mode,
+                include_inventory=True, headless=True,
+                max_steps=train_config.max_steps_per_episode,
+            )
+            level_successes = 0
+            for _ in range(train_config.eval_episodes_per_level):
+                obs_raw = env.reset()
+                done = False
+                ep_reward = 0.0
+                info: Dict[str, object] = {}
+                while not done:
+                    obs_t = preprocessor(obs_raw)
+                    mask_np = env.get_valid_actions()
+                    mask_t = torch.tensor(mask_np, dtype=torch.bool, device=device)
+                    with torch.no_grad():
+                        features = agent.encoder(obs_t.unsqueeze(0))
+                        dist = agent.policy(features, action_mask=mask_t.unsqueeze(0))
+                        if stochastic:
+                            action = int(dist.sample().item())
+                        else:
+                            action = int(dist.probs.argmax(dim=-1).item())
+                    obs_raw, reward, done, info = env.step(action)
+                    ep_reward += reward
+                total_reward += ep_reward
+                if info.get("level_completed", False):
+                    total_success += 1
+                    level_successes += 1
+                total_episodes += 1
+            env.close()
+            level_results.append(f"{kind}-{num}:{level_successes}/{train_config.eval_episodes_per_level}")
+        avg_success = total_success / max(1, total_episodes)
+        avg_reward = total_reward / max(1, total_episodes)
+        return avg_success, avg_reward, level_results
 
-    avg_success = total_success / max(1, total_episodes)
-    avg_reward = total_reward / max(1, total_episodes)
+    greedy_success, greedy_reward, greedy_levels = _run_mode(stochastic=False)
+    stoch_success, stoch_reward, _stoch_levels = _run_mode(stochastic=True)
+
     print(
-        f"[PPO-EVAL] t={timestep} | test_success={avg_success:.2%} "
-        f"| test_reward={avg_reward:.2f} | episodes={total_episodes} "
-        f"| {', '.join(level_results)}"
+        f"[PPO-EVAL] t={timestep} | "
+        f"greedy={greedy_success:.2%} (r={greedy_reward:.2f}) | "
+        f"stoch={stoch_success:.2%} (r={stoch_reward:.2f}) | "
+        f"{', '.join(greedy_levels)}"
     )
-    return {"success_rate": avg_success, "avg_reward": avg_reward}
+    return {
+        "success_rate": greedy_success,
+        "avg_reward": greedy_reward,
+        "stoch_success_rate": stoch_success,
+        "stoch_avg_reward": stoch_reward,
+    }

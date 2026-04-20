@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Reset policy head when resuming (for phase transfer)")
     p.add_argument("--no-reset-policy-head", action="store_false", dest="reset_policy_head")
     p.add_argument("--curriculum-start", type=int, default=5, help="Initial number of levels in curriculum (1-N)")
-    p.add_argument("--curriculum-threshold", type=float, default=0.55, help="Success rate to promote")
+    p.add_argument("--curriculum-threshold", type=float, default=0.40, help="Success rate to promote (P4: lowered from 0.55)")
 
     # Logging
     p.add_argument("--log-dir", type=str, default="logs", help="Log directory")
@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     ppo_group.add_argument("--ppo-rollout", type=int, default=4096, help="PPO rollout length")
     ppo_group.add_argument("--ppo-minibatch", type=int, default=128, help="PPO minibatch size")
     ppo_group.add_argument("--ppo-entropy", type=float, default=0.15, help="Entropy coefficient (high for complex levels)")
-    ppo_group.add_argument("--ppo-entropy-min", type=float, default=0.04, help="Minimum entropy coeff (schedule floor)")
+    ppo_group.add_argument("--ppo-entropy-min", type=float, default=0.08, help="Minimum entropy coeff (P6: raised from 0.04)")
     ppo_group.add_argument("--ppo-gamma", type=float, default=0.99, help="Discount factor")
     ppo_group.add_argument("--ppo-gae-lambda", type=float, default=0.95, help="GAE lambda")
 
