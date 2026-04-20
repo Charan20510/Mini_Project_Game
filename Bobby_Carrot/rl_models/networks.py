@@ -293,9 +293,13 @@ class PolicyHead(nn.Module):
         """
         logits = self.linear(features)
         if action_mask is not None:
-            # Set logits of invalid actions to -inf so they get 0 probability
-            logits = logits.masked_fill(~action_mask.bool(), float('-inf'))
-        return torch.distributions.Categorical(logits=logits)
+            # Use a large negative (not -inf) so logsumexp inside Categorical
+            # stays finite even when all actions are masked.  With -inf, PyTorch's
+            # Categorical normalises: logits - logsumexp(all -inf) = -inf-(-inf) = NaN,
+            # crashing distribution validation.  -1e9 gives effectively-zero prob
+            # for masked actions while keeping the computation graph NaN-free.
+            logits = logits.masked_fill(~action_mask.bool(), -1e9)
+        return torch.distributions.Categorical(logits=logits, validate_args=False)
 
 
 class ValueHead(nn.Module):
