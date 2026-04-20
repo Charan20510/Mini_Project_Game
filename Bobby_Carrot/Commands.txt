@@ -8,9 +8,22 @@ python -m Bobby_Carrot.rl_models.evaluate --algo ppo \
 
 ===============================    Play LEVEL (GUI)    ===============================
 
+-------------  checkpoints_phase1  -------------
+
 python -m Bobby_Carrot.rl_models.evaluate \
   --algo ppo \
   --checkpoint /home/charan/Projects/Mini_Project_Game/checkpoints_phase1/ppo/ppo_final.pt \
+  --episodes 1 \
+  --max-steps 300 \
+  --render \
+  --render-fps 3 \
+  --levels normal-1
+
+-------------  checkpoints_phase2  -------------
+
+python -m Bobby_Carrot.rl_models.evaluate \
+  --algo ppo \
+  --checkpoint /home/charan/Projects/Mini_Project_Game/checkpoints_phase2/content/Mini_Project_Game/checkpoints_phase2/ppo/ppo_final.pt \
   --episodes 1 \
   --max-steps 300 \
   --render \

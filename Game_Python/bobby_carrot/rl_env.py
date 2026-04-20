@@ -366,23 +366,33 @@ class BobbyCarrotEnv:
             # Invalidate BFS cache since map topology changed
             self._bfs_cache_version += 1
 
-            # Strategic crumble evaluation: check if source section is cleared.
-            # We pass `exclude_pos=after_pos` so the BFS from the newly formed hole
-            # does not cross into the destination section.
-            source_targets = self._get_reachable_targets_from(before_pos, exclude_pos=after_pos)
-            if len(source_targets) == 0:
-                # All items in source section collected — good crossing
-                reward += self.reward_config.strategic_crumble_bonus
-            else:
-                # Premature crossing — items permanently stranded, level is now unwinnable.
-                # Scale penalty by how many items are cut off so the agent learns the
-                # severity is proportional (e.g. stranding 10 carrots = much worse than 1).
-                stranded_count = len(source_targets)
+            # Strategic crumble evaluation.
+            # First check: are any targets now truly unreachable from after_pos?
+            # Use penalize_crumble=False so remaining crumble tiles (tile 30) are
+            # treated as walkable — only collapsed holes (tile 31) block paths.
+            # This correctly handles multi-chamber levels (e.g. L3) where items in
+            # adjacent chambers are still reachable via OTHER crumble crossings.
+            truly_stranded = [
+                t for t in self.target_positions
+                if self._bfs_shortest_distance(after_pos, {t}, penalize_crumble=False) is None
+            ]
+            if truly_stranded:
+                # Items permanently cut off — level is unwinnable.
+                stranded_count = len(truly_stranded)
                 reward += (self.reward_config.crumble_crossing_penalty
                            + self.reward_config.crumble_stranded_per_item * stranded_count)
-                # Terminate immediately — all items must be collected but these are
-                # now inaccessible, so there is no point continuing the episode.
                 self.bobby.dead = True
+            else:
+                # All targets still reachable from new position.
+                # Check if the source section (now cut off) had uncollected items:
+                # if empty, this was a clean/strategic crossing.
+                source_targets = self._get_reachable_targets_from(before_pos, exclude_pos=after_pos)
+                if len(source_targets) == 0:
+                    reward += self.reward_config.strategic_crumble_bonus
+                else:
+                    # Left items behind in source section but they're still reachable
+                    # via other paths — apply crossing penalty without termination.
+                    reward += self.reward_config.crumble_crossing_penalty
 
             # Reset distance tracking for the new section so the agent
             # isn't penalised for the distance jump after crossing a gate.
