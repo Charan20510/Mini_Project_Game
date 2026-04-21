@@ -366,7 +366,11 @@ def train_ppo(
                             w = max(0.50, 1.0 - recent_success)
                     weights.append(w)
                 w_arr = np.array(weights)
-                w_arr = w_arr / w_arr.sum()
+                w_sum = w_arr.sum()
+                if w_sum > 0:
+                    w_arr = w_arr / w_sum
+                else:
+                    w_arr = np.ones_like(w_arr) / len(w_arr)
                 # Enforce minimum quota: no level falls below curriculum_min_quota
                 # fraction of sampling mass.  This is the hard anti-forgetting
                 # guard on top of the soft mastery floor.
@@ -382,7 +386,11 @@ def train_ppo(
                         if surplus > needed:
                             w_arr[deficit_mask] = eff_quota
                             w_arr[surplus_mask] = w_arr[surplus_mask] * (surplus - needed) / surplus
-                            w_arr = w_arr / w_arr.sum()
+                            w_sum = w_arr.sum()
+                            if w_sum > 0:
+                                w_arr = w_arr / w_sum
+                            else:
+                                w_arr = np.ones_like(w_arr) / len(w_arr)
                 # Enforce maximum weight cap: no single level dominates sampling.
                 # Without this, a failing level (weight≈1.0) beats two mastered
                 # levels (weight≈0.55 each) and gets 47%+ of samples — its
@@ -397,10 +405,16 @@ def train_ppo(
                         w_arr = np.minimum(w_arr, effective_max)
                         under_mask = w_arr < effective_max
                         if under_mask.any():
-                            w_arr[under_mask] += excess.sum() * (
-                                w_arr[under_mask] / w_arr[under_mask].sum()
-                            )
-                        w_arr = w_arr / w_arr.sum()
+                            under_sum = w_arr[under_mask].sum()
+                            if under_sum > 0:
+                                w_arr[under_mask] += excess.sum() * (w_arr[under_mask] / under_sum)
+                            else:
+                                w_arr[under_mask] += excess.sum() / under_mask.sum()
+                        w_sum = w_arr.sum()
+                        if w_sum > 0:
+                            w_arr = w_arr / w_sum
+                        else:
+                            w_arr = np.ones_like(w_arr) / len(w_arr)
                 level_cycle_idx = int(np.random.choice(len(active_levels), p=w_arr))
                 current_level = active_levels[level_cycle_idx]
                 env.set_map(map_kind=current_level[0], map_number=current_level[1])
