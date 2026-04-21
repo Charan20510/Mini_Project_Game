@@ -59,7 +59,7 @@ class RewardConfig:
     no_progress_penalty_hard_after: int = 150
     no_progress_penalty_hard: float = -0.4
     all_collected_bonus: float = 15.0
-    crumble_crossing_penalty: float = -3.0
+    crumble_crossing_penalty: float = -5.0    # Raised from -3.0: L3 needs a sharper signal on the 1st/2nd wrong crumble before the dead-terminal 3rd crossing
     crumble_stranded_per_item: float = -1.5   # Additional penalty per item stranded by a premature crossing
     finish_unreachable_penalty: float = -25.0
     finish_reachable_bonus: float = 2.0
@@ -74,7 +74,7 @@ class RewardConfig:
     collection_progress_scale: float = 0.5       # Last carrot worth (1 + scale)× base
     strategic_crumble_bonus: float = 2.0          # Bonus for crossing crumble AFTER clearing source section
     crumble_bfs_penalty: int = 3                  # Extra BFS cost per crumble tile traversal (raised to discourage short-cut crossings through wrong crumble)
-    crumble_approach_bonus: float = 0.1           # Bonus for moving toward crumble gate when current section has 0 targets (reduced; was symmetric noise on L4 start)
+    crumble_approach_bonus: float = 0.25          # Raised from 0.1: on L4 the competing distance pull toward the finish-trap crumble (5,10) dominated at 0.1; 0.25 × ~8 steps outweighs the wrong-direction pull
     # --- Phase 3 additions (P1+P2: finish-orphan detection) ---
     # When the agent crosses a crumble and lands in the crumble-free component
     # that contains the FINISH tile while other components still hold uncollected
@@ -316,31 +316,7 @@ class BobbyCarrotEnv:
             if not now_all_collected and self.target_positions:
                 local_targets = self._get_reachable_targets_from(after_pos)
                 if len(local_targets) == 0:
-                    safe_crumbles: set[Tuple[int, int]] = set()
-                    for yy in range(16):
-                        for xx in range(16):
-                            if self.map_info.data[xx + yy * 16] != 30:
-                                continue
-                            has_target_neighbour = False
-                            leads_to_finish_trap = False
-                            for ddx, ddy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                                nx, ny = xx + ddx, yy + ddy
-                                if not (0 <= nx < 16 and 0 <= ny < 16):
-                                    continue
-                                ntile = self.map_info.data[nx + ny * 16]
-                                if ntile in (19, 45):
-                                    has_target_neighbour = True
-                                # A crumble edge whose non-crumble side sits in
-                                # the same component as the finish AND there
-                                # are targets elsewhere is a trap shortcut.
-                                if (ntile >= 18 and ntile != 30
-                                        and ntile != 31 and ntile != 46):
-                                    if self._finish_in_component((nx, ny)):
-                                        reach = self._get_reachable_targets_from((nx, ny))
-                                        if len(self.target_positions) - len(reach) > 0:
-                                            leads_to_finish_trap = True
-                            if has_target_neighbour and not leads_to_finish_trap:
-                                safe_crumbles.add((xx, yy))
+                    safe_crumbles = self._get_safe_crumble_positions()
                     if safe_crumbles:
                         dist_crumble_before = self._bfs_shortest_distance(
                             before_pos, safe_crumbles, penalize_crumble=False
@@ -1038,23 +1014,64 @@ class BobbyCarrotEnv:
         self._finish_reachable_cache_version = self._bfs_cache_version
         return result
 
+    def _get_safe_crumble_positions(self) -> set[Tuple[int, int]]:
+        """Return crumble tiles whose crossing advances collection without trapping the agent.
+
+        A crumble is "safe" if:
+          - at least one of its 4-neighbours is an uncollected target (carrot/egg), AND
+          - no non-crumble neighbour sits in the same crumble-free component as the
+            finish tile while other components still hold uncollected targets.
+
+        The second condition rules out L4's (5,10) shortcut: crossing it drops the
+        agent into the finish component while orphaning the remaining carrots.
+        """
+        assert self.map_info is not None
+        safe: set[Tuple[int, int]] = set()
+        if not self.target_positions:
+            return safe
+        for yy in range(16):
+            for xx in range(16):
+                if self.map_info.data[xx + yy * 16] != 30:
+                    continue
+                has_target_neighbour = False
+                leads_to_finish_trap = False
+                for ddx, ddy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nx, ny = xx + ddx, yy + ddy
+                    if not (0 <= nx < 16 and 0 <= ny < 16):
+                        continue
+                    ntile = self.map_info.data[nx + ny * 16]
+                    if ntile in (19, 45):
+                        has_target_neighbour = True
+                    if (ntile >= 18 and ntile != 30
+                            and ntile != 31 and ntile != 46):
+                        if self._finish_in_component((nx, ny)):
+                            reach = self._get_reachable_targets_from((nx, ny))
+                            if len(self.target_positions) - len(reach) > 0:
+                                leads_to_finish_trap = True
+                if has_target_neighbour and not leads_to_finish_trap:
+                    safe.add((xx, yy))
+        return safe
+
     def _min_distance_to_target_cached(self, pos: Tuple[int, int]) -> Optional[int]:
         """BFS shortest walkable distance to nearest uncollected target.
 
         Strict Sectioning: if the current section has remaining targets,
         only guide the agent to those targets. If no targets remain locally,
-        guide the agent to remote targets while penalizing crumble gate traversal.
+        guide the agent to the nearest SAFE crumble (one that opens toward a
+        remaining target without dropping us into the finish-trap component).
+        Falls back to crumble-penalized distance to all targets only if no safe
+        crumble exists — avoids L4's (5,10) gravity well where an unsafe crumble
+        is closer than the correct (5,6) crumble.
         """
         if not self.target_positions:
             return None
-        # Get targets reachable in the current section
         local_targets = self._get_reachable_targets_from(pos)
         if local_targets:
-            # Strict sectioning: guide ONLY to local targets.
             return self._bfs_shortest_distance(pos, local_targets, penalize_crumble=False)
-        else:
-            # Must cross a section: guide to remote targets, but penalize paths with more crumbles.
-            return self._bfs_shortest_distance(pos, self.target_positions, penalize_crumble=True)
+        safe_crumbles = self._get_safe_crumble_positions()
+        if safe_crumbles:
+            return self._bfs_shortest_distance(pos, safe_crumbles, penalize_crumble=False)
+        return self._bfs_shortest_distance(pos, self.target_positions, penalize_crumble=True)
 
     def _min_distance_to_finish(self, pos: Tuple[int, int]) -> Optional[int]:
         """BFS shortest walkable distance to nearest finish tile."""
@@ -1085,9 +1102,13 @@ class BobbyCarrotEnv:
             return set()
 
         start = self.bobby.coord_src
-        # High crumble cost while items remain so the path channel discourages
-        # the agent from treating a crumble gate as a shortcut to the finish.
-        crumble_cost = 20 if self.target_positions else 1
+        # While items remain, forbid crumble crossings in the path channel (cost 999
+        # ≈ infinity so no route chosen goes through a crumble). Previously cost 20
+        # still highlighted the crumble column as "the path to finish" on L3, which
+        # actively taught the policy to burn all three crumbles straight up before
+        # collecting any carrots. Once everything is collected the cost drops to 1
+        # and the channel guides the agent to the finish directly.
+        crumble_cost = 999 if self.target_positions else 1
 
         # Dijkstra — degrades to BFS when crumble_cost == 1
         best_dist: Dict[Tuple[int, int], int] = {start: 0}

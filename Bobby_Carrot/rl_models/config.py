@@ -35,7 +35,7 @@ class TrainingConfig:
 
     # Curriculum settings
     curriculum: bool = True
-    curriculum_start_levels: int = 5      # Start with levels 1-5
+    curriculum_start_levels: int = 1      # Start with L1 only; promote as mastery accrues
     curriculum_promotion_window: int = 120
     curriculum_promotion_threshold: float = 0.40  # P4: lowered from 0.55 so L3→L4 can advance
     curriculum_add_levels: int = 3        # Add 3 levels per promotion
@@ -61,7 +61,7 @@ class TrainingConfig:
     # P5 EMA teacher + KL anti-forgetting.
     teacher_ema_decay: float = 0.995       # Teacher lags student
     teacher_kl_coef: float = 0.02          # Global KL(student || teacher) weight
-    teacher_kl_mastery_coef: float = 0.10  # Extra weight when any level is mastered (≥75%)
+    teacher_kl_mastery_coef: float = 0.20  # Raised from 0.10: L1 was forgotten every time L2/L3 gradients dominated a rollout
     # Cosine decay of LR over the last fraction of training (0.0 disables).
     lr_decay_final_fraction: float = 0.25  # Decay over last 25%
     lr_decay_min_multiplier: float = 0.3   # LR floor = lr * 0.3
