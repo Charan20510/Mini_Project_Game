@@ -94,6 +94,12 @@ class TrainingConfig:
     # harmful. Only set True if the action space *semantics* change.
     reset_policy_head_on_resume: bool = False
 
+    # Early stopping (single-level demo runs). 0.0 disables — every existing
+    # phased run passes the default, so this is a no-op for them.
+    early_stop_success: float = 0.0       # Stop when rolling success >= this
+    early_stop_window: int = 100          # Over the last N episodes
+    early_stop_min_timesteps: int = 20_000  # Floor before checks arm
+
 
 @dataclass
 class PPOConfig:

@@ -758,6 +758,34 @@ def train_ppo(
                 train_config, device, total_timesteps,
             )
 
+        # ── Early Stopping ────────────────────────────────────
+        # Single-level demo runs pass early_stop_success > 0 to terminate once
+        # the agent has reliably solved its target level. No-op for phased runs.
+        if (
+            train_config.early_stop_success > 0.0
+            and total_timesteps >= train_config.early_stop_min_timesteps
+            and len(episode_successes) >= train_config.early_stop_window
+        ):
+            recent_success = float(
+                np.mean(episode_successes[-train_config.early_stop_window:])
+            )
+            if recent_success >= train_config.early_stop_success:
+                print(
+                    f"[PPO] Early-stop: rolling success {recent_success:.1%} "
+                    f">= target {train_config.early_stop_success:.1%} "
+                    f"over last {train_config.early_stop_window} eps @ t={total_timesteps}"
+                )
+                # Snapshot best at the stopping point — the current policy is the best we've seen.
+                best_path = ckpt_dir / "ppo_best.pt"
+                torch.save({
+                    "agent_state_dict": agent.state_dict(),
+                    "total_timesteps": total_timesteps,
+                    "episode_count": episode_count,
+                    "best_success": recent_success,
+                }, best_path)
+                print(f"[PPO] Best model saved to {best_path} (success={recent_success:.2%})")
+                break
+
     # Final save
     final_path = ckpt_dir / "ppo_final.pt"
     torch.save({
