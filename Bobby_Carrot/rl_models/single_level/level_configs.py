@@ -99,7 +99,7 @@ def build_configs_for_level(
         train_cfg.max_steps_per_episode = 300
         ppo_cfg = PPOConfig(
             lr=3e-4,
-            entropy_coeff=0.05,
+            entropy_coeff=0.15,
             entropy_min=0.02,
             clip_ratio=0.2,
             rollout_length=2048,
