@@ -85,9 +85,9 @@ def build_configs_for_level(
         eval_interval=25_000,
         eval_episodes_per_level=10,
         log_interval=2_000,
-        # Early-stopping: 95% rolling success over 100 eps, but only after 20k steps of warmup.
-        early_stop_success=0.95,
-        early_stop_window=100,
+        # Early-stopping: require > 95 continuous successes in a row to interrupt before total_timesteps
+        early_stop_success=1.0,
+        early_stop_window=96,
         early_stop_min_timesteps=20_000,
         # Same cosine LR decay shape as phased runs, a bit gentler at the end.
         lr_decay_final_fraction=0.25,
