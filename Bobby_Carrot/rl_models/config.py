@@ -37,7 +37,7 @@ class TrainingConfig:
     curriculum: bool = True
     curriculum_start_levels: int = 1      # Start with L1 only; promote as mastery accrues
     curriculum_promotion_window: int = 120
-    curriculum_promotion_threshold: float = 0.40  # P4: lowered from 0.55 so L3→L4 can advance
+    curriculum_promotion_threshold: float = 0.35  # Lowered 0.40→0.35: Phase-1 L2 peaked at 57% but oscillated; 0.35 matches fallback threshold and unblocks curriculum flow
     curriculum_add_levels: int = 3        # Add 3 levels per promotion
     # Anti-forgetting: keep mastered levels practiced even when new levels are
     # failing hard, and require 2 consecutive windows above threshold before
@@ -47,21 +47,19 @@ class TrainingConfig:
     curriculum_min_quota: float = 0.10    # Every active level must get ≥ this fraction (10% with 25 levels)
     curriculum_max_level_weight: float = 0.40  # No level may consume more than this fraction of samples
     curriculum_dwell_windows: int = 2     # Highest level must stay ≥ threshold this many windows
-    # P4 fallback promotion: if the highest level has plateaued above a softer
-    # threshold for this many windows without reaching the main threshold,
-    # promote anyway so L4/L5 still get training exposure.
-    # Bug fix: raised from 0.20→0.35 and 4→6 to prevent premature promotion
-    # before the frontier level has consolidated (was causing L2→L3 promotion
-    # when L2 had only crossed the main threshold once).
+    # Fallback promotion: if the highest level has plateaued above this threshold
+    # for `fallback_windows` consecutive windows without reaching the main
+    # promotion threshold, promote anyway so later levels still get training
+    # exposure. Threshold matches main promotion to avoid soft-path advancement.
     curriculum_fallback_threshold: float = 0.35
-    curriculum_fallback_windows: int = 6
+    curriculum_fallback_windows: int = 4  # Lowered 6→4: prior 500k run never triggered fallback on oscillating L2; 4-window sustain is enough evidence
     # On each promotion, boost entropy_coeff for N steps to force exploration
     # on the newly-added levels before the LR schedule tightens it.
-    entropy_boost_steps: int = 80_000
+    entropy_boost_steps: int = 30_000  # Lowered 80k→30k: prior run spent ~40% of total timesteps under entropy boost due to spurious regression re-arms
     entropy_boost_multiplier: float = 2.0
     # P6 regression-triggered entropy boost: if any active level's rolling
     # success drops by >= this from its recorded max, re-arm the entropy boost.
-    regression_trigger_drop: float = 0.25
+    regression_trigger_drop: float = 0.40  # Raised 0.25→0.40: 0.25 fired on normal L2 variance (57%→32% swings) causing entropy-boost cascade that prevented policy consolidation
     # P5 EMA teacher + KL anti-forgetting.
     # Decay is applied ONCE PER ROLLOUT (not per minibatch). At 0.99/rollout
     # the teacher absorbs ~1% of the student's update each rollout, giving a

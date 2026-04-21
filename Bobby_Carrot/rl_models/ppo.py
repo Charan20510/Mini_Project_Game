@@ -797,13 +797,15 @@ def _run_eval(
     if str(game_python) not in sys.path:
         sys.path.insert(0, str(game_python))
     from bobby_carrot.rl_env import BobbyCarrotEnv  # type: ignore
+    from .evaluate import compute_optimal_path_length
 
     agent.eval()
 
-    def _run_mode(stochastic: bool) -> Tuple[float, float, List[str]]:
+    def _run_mode(stochastic: bool) -> Tuple[float, float, float, List[str]]:
         total_success = 0
         total_episodes = 0
         total_reward = 0.0
+        path_ratios: List[float] = []
         level_results: List[str] = []
         for kind, num in test_levels:
             env = BobbyCarrotEnv(
@@ -815,8 +817,10 @@ def _run_eval(
             level_successes = 0
             for _ in range(train_config.eval_episodes_per_level):
                 obs_raw = env.reset()
+                optimal_len = compute_optimal_path_length(env)
                 done = False
                 ep_reward = 0.0
+                ep_steps = 0
                 info: Dict[str, object] = {}
                 while not done:
                     obs_t = preprocessor(obs_raw)
@@ -831,24 +835,33 @@ def _run_eval(
                             action = int(dist.probs.argmax(dim=-1).item())
                     obs_raw, reward, done, info = env.step(action)
                     ep_reward += reward
+                    ep_steps += 1
                 total_reward += ep_reward
                 if info.get("level_completed", False):
                     total_success += 1
                     level_successes += 1
+                    if 0 < optimal_len < 10**9:
+                        path_ratios.append(ep_steps / float(optimal_len))
                 total_episodes += 1
             env.close()
             level_results.append(f"{kind}-{num}:{level_successes}/{train_config.eval_episodes_per_level}")
         avg_success = total_success / max(1, total_episodes)
         avg_reward = total_reward / max(1, total_episodes)
-        return avg_success, avg_reward, level_results
+        # Step efficiency: mean(actual_steps / optimal_steps) across successful episodes.
+        # 1.0 = optimal, higher = wasted steps (e.g. L1 wander). Reported as NaN if no successes.
+        avg_ratio = float(np.mean(path_ratios)) if path_ratios else float("nan")
+        return avg_success, avg_reward, avg_ratio, level_results
 
-    greedy_success, greedy_reward, greedy_levels = _run_mode(stochastic=False)
-    stoch_success, stoch_reward, _stoch_levels = _run_mode(stochastic=True)
+    greedy_success, greedy_reward, greedy_ratio, greedy_levels = _run_mode(stochastic=False)
+    stoch_success, stoch_reward, stoch_ratio, _stoch_levels = _run_mode(stochastic=True)
+
+    def _fmt_ratio(r: float) -> str:
+        return f"{r:.2f}x" if not (r != r) else "—"  # NaN check
 
     print(
         f"[PPO-EVAL] t={timestep} | "
-        f"greedy={greedy_success:.2%} (r={greedy_reward:.2f}) | "
-        f"stoch={stoch_success:.2%} (r={stoch_reward:.2f}) | "
+        f"greedy={greedy_success:.2%} (r={greedy_reward:.2f}, steps/opt={_fmt_ratio(greedy_ratio)}) | "
+        f"stoch={stoch_success:.2%} (r={stoch_reward:.2f}, steps/opt={_fmt_ratio(stoch_ratio)}) | "
         f"{', '.join(greedy_levels)}"
     )
     return {
@@ -856,4 +869,6 @@ def _run_eval(
         "avg_reward": greedy_reward,
         "stoch_success_rate": stoch_success,
         "stoch_avg_reward": stoch_reward,
+        "greedy_step_ratio": greedy_ratio,
+        "stoch_step_ratio": stoch_ratio,
     }
