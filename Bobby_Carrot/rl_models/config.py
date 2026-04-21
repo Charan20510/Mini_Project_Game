@@ -63,9 +63,17 @@ class TrainingConfig:
     # success drops by >= this from its recorded max, re-arm the entropy boost.
     regression_trigger_drop: float = 0.25
     # P5 EMA teacher + KL anti-forgetting.
-    teacher_ema_decay: float = 0.995       # Teacher lags student
+    # Decay is applied ONCE PER ROLLOUT (not per minibatch). At 0.99/rollout
+    # the teacher absorbs ~1% of the student's update each rollout, giving a
+    # stable ~50-rollout memory window. The old 0.995/minibatch value caused
+    # 47% teacher update per rollout (128 steps × 0.5%), losing L_n-1 knowledge
+    # within 2-3 rollouts of a new level being introduced.
+    teacher_ema_decay: float = 0.99        # Per-rollout decay (NOT per-minibatch)
     teacher_kl_coef: float = 0.02          # Global KL(student || teacher) weight
     teacher_kl_mastery_coef: float = 0.20  # Raised from 0.10: L1 was forgotten every time L2/L3 gradients dominated a rollout
+    # Retention gate: block curriculum promotion if any already-active mastered
+    # level (peak success ≥70%) has regressed below this floor. 0.0 disables.
+    curriculum_retention_floor: float = 0.60
     # Cosine decay of LR over the last fraction of training (0.0 disables).
     lr_decay_final_fraction: float = 0.25  # Decay over last 25%
     lr_decay_min_multiplier: float = 0.3   # LR floor = lr * 0.3

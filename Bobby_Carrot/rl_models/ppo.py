@@ -557,14 +557,6 @@ def train_ppo(
                           f"at t={total_timesteps} — skipping optimizer step")
                     optimizer.zero_grad()
 
-                # P5: EMA-update the teacher only when the student step was valid.
-                if torch.isfinite(loss):
-                    with torch.no_grad():
-                        for t_param, s_param in zip(teacher.parameters(), agent.parameters()):
-                            t_param.data.mul_(_teacher_decay).add_(
-                                s_param.data, alpha=1.0 - _teacher_decay
-                            )
-
                 total_kl_teacher += float(kl_teacher.item()) if torch.isfinite(kl_teacher) else 0.0
 
                 # ICM update — guard against NaN features from a bad PPO step.
@@ -588,6 +580,17 @@ def train_ppo(
                 total_entropy += entropy.mean().item()
                 total_clip_frac += clip_frac
                 update_count += 1
+
+        # EMA-update the teacher once per rollout (not per minibatch).
+        # Per-minibatch updates at decay=0.995 let the teacher absorb ~47% of
+        # the new policy per rollout — it forgets L_n-1 within 2-3 rollouts of
+        # a new level being introduced, breaking the anti-forgetting anchor.
+        # Per-rollout at decay=0.99 gives ~1% update per rollout instead.
+        with torch.no_grad():
+            for t_param, s_param in zip(teacher.parameters(), agent.parameters()):
+                t_param.data.mul_(_teacher_decay).add_(
+                    s_param.data, alpha=1.0 - _teacher_decay
+                )
 
         # ── Logging ───────────────────────────────────────────
         if total_timesteps % train_config.log_interval < ppo_config.rollout_length:
@@ -655,7 +658,28 @@ def train_ppo(
                 fallback_ready = (
                     fallback_dwell_counter >= train_config.curriculum_fallback_windows
                 )
-                if main_ready or fallback_ready:
+                # Retention gate: block promotion if any non-frontier active level
+                # that was previously mastered (≥75%) has regressed below the
+                # retention floor. This prevents introducing L_n+1 while L_n is
+                # already forgetting — the pattern that caused L2 → 0% collapse.
+                retention_floor = train_config.curriculum_retention_floor
+                retention_blocked = False
+                if retention_floor > 0 and len(active_levels) > 1:
+                    for lvl in active_levels[:-1]:
+                        hist = level_success_history.get(lvl, [])
+                        if len(hist) < _LEVEL_HISTORY_WINDOW:
+                            continue
+                        recent = float(np.mean(hist[-_LEVEL_HISTORY_WINDOW:]))
+                        prev_max = level_success_max.get(lvl, 0.0)
+                        if prev_max >= 0.70 and recent < retention_floor:
+                            retention_blocked = True
+                            print(
+                                f"[PPO] Promotion blocked (retention gate): "
+                                f"{lvl[0]}{lvl[1]} regressed to {recent:.0%} "
+                                f"(was {prev_max:.0%}, floor={retention_floor:.0%})"
+                            )
+                            break
+                if (main_ready or fallback_ready) and not retention_blocked:
                     old_count = len(active_levels)
                     n_add = max(1, train_config.curriculum_add_levels)
                     active_levels = all_train_levels[:min(old_count + n_add, len(all_train_levels))]
