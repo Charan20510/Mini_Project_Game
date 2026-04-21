@@ -352,7 +352,10 @@ def train_ppo(
                 for lvl in active_levels:
                     history = level_success_history.get(lvl, [])
                     if len(history) < 5:
-                        w = 2.0  # High weight for under-explored new levels
+                        # Bug fix: was 2.0 — caused 64.5% sampling spike for new
+                        # levels on first addition, flooding rollout with failure
+                        # episodes that overwrote shared encoder features.
+                        w = 1.0  # Moderate boost for under-explored new levels
                     else:
                         recent_success = float(np.mean(history[-_LEVEL_HISTORY_WINDOW:]))
                         if recent_success >= 0.75:
@@ -380,6 +383,24 @@ def train_ppo(
                             w_arr[deficit_mask] = eff_quota
                             w_arr[surplus_mask] = w_arr[surplus_mask] * (surplus - needed) / surplus
                             w_arr = w_arr / w_arr.sum()
+                # Enforce maximum weight cap: no single level dominates sampling.
+                # Without this, a failing level (weight≈1.0) beats two mastered
+                # levels (weight≈0.55 each) and gets 47%+ of samples — its
+                # failure gradients overwrite shared encoder features for other levels.
+                # effective_max is at least 1/N so the cap is always physically enforceable
+                # (e.g. with only 2 levels, 50% each is the minimum possible).
+                max_level_weight = train_config.curriculum_max_level_weight
+                if max_level_weight < 1.0 and len(active_levels) > 1:
+                    effective_max = max(max_level_weight, 1.0 / len(active_levels))
+                    excess = np.maximum(w_arr - effective_max, 0.0)
+                    if excess.sum() > 0:
+                        w_arr = np.minimum(w_arr, effective_max)
+                        under_mask = w_arr < effective_max
+                        if under_mask.any():
+                            w_arr[under_mask] += excess.sum() * (
+                                w_arr[under_mask] / w_arr[under_mask].sum()
+                            )
+                        w_arr = w_arr / w_arr.sum()
                 level_cycle_idx = int(np.random.choice(len(active_levels), p=w_arr))
                 current_level = active_levels[level_cycle_idx]
                 env.set_map(map_kind=current_level[0], map_number=current_level[1])
@@ -406,14 +427,15 @@ def train_ppo(
         return_rms.update(rollout.returns[:rollout.ptr])
         return_std = return_rms.std
 
-        # P5: detect whether any active level is "mastered" (≥75% recent
-        # success) — if so, strengthen the KL anchor to the teacher to guard
-        # against catastrophic forgetting during hard-level training.
+        # P5: detect whether any active level is "mastered" — if so, strengthen
+        # the KL anchor to guard against catastrophic forgetting.
+        # Bug fix: threshold lowered 0.75→0.60 so L2 (which peaked at 68%) triggers
+        # the stronger KL coef before it starts regressing, not after.
         has_mastered_level = False
         for lvl in active_levels:
             hist = level_success_history.get(lvl, [])
             if len(hist) >= 20:
-                if float(np.mean(hist[-_LEVEL_HISTORY_WINDOW:])) >= 0.75:
+                if float(np.mean(hist[-_LEVEL_HISTORY_WINDOW:])) >= 0.60:
                     has_mastered_level = True
                     break
         active_kl_coef = _teacher_kl_coef + (
@@ -635,7 +657,8 @@ def train_ppo(
                 )
                 if main_ready or fallback_ready:
                     old_count = len(active_levels)
-                    active_levels = all_train_levels[:old_count + 1]
+                    n_add = max(1, train_config.curriculum_add_levels)
+                    active_levels = all_train_levels[:min(old_count + n_add, len(all_train_levels))]
                     new_lvl = active_levels[-1]
                     if new_lvl not in level_success_history:
                         level_success_history[new_lvl] = []

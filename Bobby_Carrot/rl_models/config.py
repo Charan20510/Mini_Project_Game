@@ -45,12 +45,16 @@ class TrainingConfig:
     level_history_window: int = 80
     curriculum_mastery_floor: float = 0.55  # Min sampling weight for a mastered (≥75%) level
     curriculum_min_quota: float = 0.10    # Every active level must get ≥ this fraction (10% with 25 levels)
+    curriculum_max_level_weight: float = 0.40  # No level may consume more than this fraction of samples
     curriculum_dwell_windows: int = 2     # Highest level must stay ≥ threshold this many windows
     # P4 fallback promotion: if the highest level has plateaued above a softer
     # threshold for this many windows without reaching the main threshold,
     # promote anyway so L4/L5 still get training exposure.
-    curriculum_fallback_threshold: float = 0.20
-    curriculum_fallback_windows: int = 4
+    # Bug fix: raised from 0.20→0.35 and 4→6 to prevent premature promotion
+    # before the frontier level has consolidated (was causing L2→L3 promotion
+    # when L2 had only crossed the main threshold once).
+    curriculum_fallback_threshold: float = 0.35
+    curriculum_fallback_windows: int = 6
     # On each promotion, boost entropy_coeff for N steps to force exploration
     # on the newly-added levels before the LR schedule tightens it.
     entropy_boost_steps: int = 80_000
