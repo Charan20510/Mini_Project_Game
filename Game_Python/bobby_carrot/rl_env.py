@@ -44,7 +44,7 @@ ACTION_TO_STATE = {
 class RewardConfig:
     carrot: float = 15.0
     egg: float = 25.0
-    finish: float = 100.0
+    finish: float = 300.0
     death: float = -100.0
     step: float = -0.05
     invalid_move: float = -1.0
@@ -72,8 +72,11 @@ class RewardConfig:
     revisit_collected_penalty: float = -0.1
     repeat_position_penalty: float = -0.1
     immediate_backtrack_penalty: float = -0.2
-    # Phase 2 fix: halved to reduce over-reliance on dense gradient pull.
-    finish_approach_bonus: float = 0.15
+    # Must be large enough that "each step toward finish" has a strongly positive
+    # net reward even after step + post_collection penalties (−0.30/step combined).
+    # At 0.15 the net was −0.15/step — no dense pull toward finish, causing the
+    # "collect all carrots then wander until timeout" collapse pattern on L2/L3.
+    finish_approach_bonus: float = 5.0
     # --- Phase 2 additions ---
     collection_progress_scale: float = 0.5       # Last carrot worth (1 + scale)× base
     strategic_crumble_bonus: float = 2.0          # Bonus for crossing crumble AFTER clearing source section
