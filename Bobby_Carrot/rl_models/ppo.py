@@ -736,7 +736,27 @@ def train_ppo(
                 f"t={last_entropy_boost_until}"
             )
 
-        # ── Checkpointing ─────────────────────────────────────
+        # ── Best-model tracking (every rollout) ───────────────
+        # Previously this was gated inside the checkpoint_every block (20k
+        # steps) which missed the L2 peak at t=110k (60% success) because the
+        # next save gate was 10k steps later — by then the policy had already
+        # collapsed back to 0%. Check every rollout with a shorter window so
+        # transient peaks survive as on-disk checkpoints.
+        rolling_window = max(32, min(64, train_config.early_stop_window // 2))
+        if len(episode_successes) >= 20:
+            recent_success = float(np.mean(episode_successes[-rolling_window:]))
+            if recent_success > best_avg_success:
+                best_avg_success = recent_success
+                best_path = ckpt_dir / "ppo_best.pt"
+                torch.save({
+                    "agent_state_dict": agent.state_dict(),
+                    "total_timesteps": total_timesteps,
+                    "episode_count": episode_count,
+                    "best_success": best_avg_success,
+                }, best_path)
+                print(f"[PPO] New best model saved (success={best_avg_success:.2%} over last {rolling_window} eps)")
+
+        # ── Periodic Snapshot Checkpoint ──────────────────────
         if total_timesteps % train_config.checkpoint_every < ppo_config.rollout_length:
             ckpt_path = ckpt_dir / f"ppo_{total_timesteps}.pt"
             torch.save({
@@ -752,25 +772,31 @@ def train_ppo(
                 },
             }, ckpt_path)
 
-            # Save best model
-            recent_success = float(np.mean(episode_successes[-100:])) if len(episode_successes) >= 10 else 0.0
-            if recent_success > best_avg_success:
-                best_avg_success = recent_success
+        # ── Periodic Evaluation ───────────────────────────────
+        if total_timesteps % train_config.eval_interval < ppo_config.rollout_length:
+            eval_metrics = _run_eval(
+                agent, preprocessor, level_config.test_levels,
+                train_config, device, total_timesteps,
+            )
+            # Anchor "best" to the *eval* distribution too: if the greedy-eval
+            # or stochastic-eval success is the strongest signal we've seen,
+            # snapshot the agent. This pins best to a policy that actually
+            # generalises, not just one that got lucky during training rollouts.
+            eval_success = max(
+                eval_metrics.get("success_rate", 0.0),
+                eval_metrics.get("stoch_success_rate", 0.0),
+            )
+            if eval_success > best_avg_success:
+                best_avg_success = eval_success
                 best_path = ckpt_dir / "ppo_best.pt"
                 torch.save({
                     "agent_state_dict": agent.state_dict(),
                     "total_timesteps": total_timesteps,
                     "episode_count": episode_count,
                     "best_success": best_avg_success,
+                    "source": "eval",
                 }, best_path)
-                print(f"[PPO] New best model saved (success={best_avg_success:.2%})")
-
-        # ── Periodic Evaluation ───────────────────────────────
-        if total_timesteps % train_config.eval_interval < ppo_config.rollout_length:
-            _run_eval(
-                agent, preprocessor, level_config.test_levels,
-                train_config, device, total_timesteps,
-            )
+                print(f"[PPO] New best model saved from eval (success={best_avg_success:.2%})")
 
         # ── Early Stopping ────────────────────────────────────
         # Single-level demo runs pass early_stop_success > 0 to terminate once

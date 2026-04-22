@@ -63,11 +63,15 @@ class RewardConfig:
     crumble_stranded_per_item: float = -1.5   # Additional penalty per item stranded by a premature crossing
     finish_unreachable_penalty: float = -25.0
     finish_reachable_bonus: float = 2.0
-    # Phase 2 fix: stronger revisit penalties so a revisit wipes at least a
-    # half-step of distance shaping (0.3 delta_scale × 1 = 0.3).
-    revisit_collected_penalty: float = -0.8
-    repeat_position_penalty: float = -0.4
-    immediate_backtrack_penalty: float = -0.75
+    # L2/L3 fix: the prior values (-0.8 / -0.4 / -0.75) were tuned for wide-open
+    # maps and punished the ONLY optimal carrot-weave path on tight fields
+    # (rows like C G C G C require walking over tile-20 collected carrots).
+    # Result: agent collects partial carrots and stops — "high reward, 0% success"
+    # signature in the L2 training logs. Softened so revisit costs are a nudge,
+    # not a cliff; no_progress_penalty still catches pure dithering.
+    revisit_collected_penalty: float = -0.1
+    repeat_position_penalty: float = -0.1
+    immediate_backtrack_penalty: float = -0.2
     # Phase 2 fix: halved to reduce over-reliance on dense gradient pull.
     finish_approach_bonus: float = 0.15
     # --- Phase 2 additions ---

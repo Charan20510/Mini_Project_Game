@@ -1,10 +1,14 @@
 """Per-level hyperparameter presets for single-map PPO demo runs.
 
-Three tiers, chosen by mechanic complexity:
+Four tiers, chosen by mechanic complexity:
 
-  Tier A (L1-L3): floor + carrot only. Tiny maps, fast convergence.
-  Tier B (L4-L7): + crumble + first arrows. Modest headroom.
-  Tier C (L8-L10): + conveyor belts. Needs ICM and a bigger time budget.
+  Tier A1 (L1):       floor + carrot only. Tiny map, fast convergence.
+  Tier A2 (L2-L3):    + crumble-intro (1 to 3 stacked one-use bridges).
+                      Needs longer budget, higher entropy floor, and ICM to
+                      avoid the collapse-to-oscillation failure mode observed
+                      on the prior "tier A" preset (avg_r ~150, success 0%).
+  Tier B  (L4-L7):    + crumble chains + first arrows. Modest headroom.
+  Tier C  (L8-L10):   + conveyor belts. Needs ICM and a bigger time budget.
 
 All anti-forgetting / curriculum knobs are disabled. Single level = single
 policy = no forgetting to fight.
@@ -20,7 +24,8 @@ from ..config import ICMConfig, LevelConfig, PPOConfig, TrainingConfig
 
 # level_num -> tier letter
 LEVEL_TIER: Dict[int, str] = {
-    1: "A", 2: "A", 3: "A",
+    1: "A1",
+    2: "A2", 3: "A2",
     4: "B", 5: "B", 6: "B", 7: "B",
     8: "C", 9: "C", 10: "C",
 }
@@ -94,7 +99,8 @@ def build_configs_for_level(
         lr_decay_min_multiplier=0.3,
     )
 
-    if tier == "A":
+    if tier == "A1":
+        # Pure carrot-collection (L1). Fast; the previous tuning worked.
         train_cfg.total_timesteps = 150_000
         train_cfg.max_steps_per_episode = 300
         ppo_cfg = PPOConfig(
@@ -108,6 +114,42 @@ def build_configs_for_level(
             cnn_channels=[32, 64, 64, 64],
         )
         icm_cfg = ICMConfig(enabled=False, intrinsic_reward_scale=0.0)
+
+    elif tier == "A2":
+        # L2 / L3 — crumble-intro. The old "tier A" config catastrophically
+        # collapsed here: success peaked at 60% then dropped to 0% while
+        # average reward plateaued ~150 (shaping-gradient ≠ task-gradient).
+        # Fixes:
+        #   * Longer budget (250k) so the policy has time to find the
+        #     finish AFTER the carrot field without entropy pinning it.
+        #   * Larger rollout (4096) → lower variance in advantage targets
+        #     for the critical "step onto crumble" action.
+        #   * Higher entropy floor (0.06) to keep exploration alive past the
+        #     70k-step collapse point.
+        #   * Regression trigger lowered to 0.20 so a 60→40% crash rearms
+        #     the entropy boost immediately instead of waiting for a 40pt drop.
+        #   * ICM enabled at low scale to reward genuinely-novel states inside
+        #     the carrot field (weaving past collected tiles).
+        train_cfg.total_timesteps = 250_000
+        train_cfg.max_steps_per_episode = 300
+        train_cfg.regression_trigger_drop = 0.20
+        train_cfg.entropy_boost_steps = 20_000
+        train_cfg.entropy_boost_multiplier = 2.0
+        train_cfg.eval_interval = 10_000
+        train_cfg.checkpoint_every = 10_000
+        train_cfg.lr_decay_final_fraction = 0.15
+        train_cfg.lr_decay_min_multiplier = 0.4
+        ppo_cfg = PPOConfig(
+            lr=2.5e-4,
+            entropy_coeff=0.12,
+            entropy_min=0.06,
+            clip_ratio=0.2,
+            rollout_length=4096,
+            minibatch_size=128,
+            n_epochs=4,
+            cnn_channels=[32, 64, 64, 64],
+        )
+        icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.005)
 
     elif tier == "B":
         train_cfg.total_timesteps = 300_000

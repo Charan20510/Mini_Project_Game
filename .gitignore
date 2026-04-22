@@ -182,5 +182,11 @@ checkpoints_phase2/
 logs_phase2/
 checkpoints_phase3/
 logs_phase3/
+checkpoints_level*/
+logs_level*/
 trained_model.zip
 training_curves.png
+
+# Gameplay frame captures and local smoke-test artifacts
+L*_captured_frames/
+/tmp/smoke_*/
