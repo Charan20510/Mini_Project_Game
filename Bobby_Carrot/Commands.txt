@@ -36,3 +36,17 @@ python -m Bobby_Carrot.rl_models.evaluate \
   --render \
   --render-fps 5 \
   --levels normal-2
+
+
+===============================    Train LEVEL (Rainbow DQN)    ===============================
+
+-------------  Train Rainbow DQN (Level 2)  -------------
+
+python -m Bobby_Carrot.rl_models.train \
+  --algo rainbow \
+  --timesteps 3000000 \
+  --checkpoint-dir checkpoints_level2 \
+  --log-dir logs_level2 \
+  --train-normal-max 2 \
+  --test-normal-start 2 --test-normal-end 2 \
+  --curriculum

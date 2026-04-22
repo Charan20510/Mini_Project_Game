@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from ..ppo import train_ppo
+from ..rainbow import train_rainbow
 from .level_configs import build_configs_for_level, LEVEL_TIER
 
 
@@ -38,7 +38,7 @@ def train_single_level(
     total_timesteps_override : Optional[int]
         Override the tier default. Useful if a level needs extra budget.
     """
-    ppo_cfg, train_cfg, level_cfg, icm_cfg = build_configs_for_level(
+    rb_cfg, train_cfg, level_cfg, icm_cfg = build_configs_for_level(
         level_num, checkpoint_root=checkpoint_root
     )
     if total_timesteps_override is not None:
@@ -49,30 +49,25 @@ def train_single_level(
         f"\n{'='*72}\n"
         f"  Single-Level PPO: normal-{level_num:02d} (tier {tier})\n"
         f"  budget={train_cfg.total_timesteps:,} steps | "
-        f"lr={ppo_cfg.lr} | ent={ppo_cfg.entropy_coeff} | "
+        f"lr={rb_cfg.lr} | "
         f"icm={'on' if icm_cfg.enabled else 'off'} | "
         f"early_stop={train_cfg.early_stop_success:.0%}\n"
         f"  ckpt={train_cfg.checkpoint_dir}\n"
         f"{'='*72}"
     )
 
-    return train_ppo(
-        ppo_config=ppo_cfg,
+    return train_rainbow(
+        rainbow_config=rb_cfg,
         train_config=train_cfg,
         level_config=level_cfg,
         icm_config=icm_cfg,
-        resume_path=resume_path,
     )
 
 
 def best_ckpt_for_level(level_num: int, checkpoint_root: str = ".") -> str:
-    """Return path to ``ppo_best.pt`` for a level, falling back to ``ppo_final.pt``."""
-    root = Path(checkpoint_root) / f"checkpoints_level{level_num}" / "ppo"
-    best = root / "ppo_best.pt"
-    if best.exists():
-        return str(best)
-    final = root / "ppo_final.pt"
+    """Return path to ``rainbow_final.pt`` for a level."""
+    root = Path(checkpoint_root) / f"checkpoints_level{level_num}" / "rainbow"
+    final = root / "rainbow_final.pt"
     if final.exists():
-        print(f"[single_level] ppo_best.pt missing for L{level_num} — using ppo_final.pt")
         return str(final)
     raise FileNotFoundError(f"No checkpoint found under {root}")

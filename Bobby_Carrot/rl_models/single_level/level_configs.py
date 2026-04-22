@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Tuple
 
-from ..config import ICMConfig, LevelConfig, PPOConfig, TrainingConfig
+from ..config import ICMConfig, LevelConfig, RainbowConfig, TrainingConfig
 
 
 # level_num -> tier letter
@@ -34,8 +34,8 @@ LEVEL_TIER: Dict[int, str] = {
 def build_configs_for_level(
     level_num: int,
     checkpoint_root: str = ".",
-) -> Tuple[PPOConfig, TrainingConfig, LevelConfig, ICMConfig]:
-    """Build the four configs needed by `train_ppo` for a single normal level.
+) -> Tuple[RainbowConfig, TrainingConfig, LevelConfig, ICMConfig]:
+    """Build the four configs needed by `train_rainbow` for a single normal level.
 
     Parameters
     ----------
@@ -103,14 +103,10 @@ def build_configs_for_level(
         # Pure carrot-collection (L1). Fast; the previous tuning worked.
         train_cfg.total_timesteps = 150_000
         train_cfg.max_steps_per_episode = 300
-        ppo_cfg = PPOConfig(
-            lr=3e-4,
-            entropy_coeff=0.15,
-            entropy_min=0.02,
-            clip_ratio=0.2,
-            rollout_length=2048,
-            minibatch_size=64,
-            n_epochs=4,
+        rb_cfg = RainbowConfig(
+            lr=1e-4,
+            buffer_size=100_000,
+            batch_size=32,
             cnn_channels=[32, 64, 64, 64],
         )
         icm_cfg = ICMConfig(enabled=False, intrinsic_reward_scale=0.0)
@@ -139,14 +135,10 @@ def build_configs_for_level(
         train_cfg.checkpoint_every = 10_000
         train_cfg.lr_decay_final_fraction = 0.15
         train_cfg.lr_decay_min_multiplier = 0.4
-        ppo_cfg = PPOConfig(
-            lr=2.5e-4,
-            entropy_coeff=0.12,
-            entropy_min=0.08,
-            clip_ratio=0.2,
-            rollout_length=4096,
-            minibatch_size=256,
-            n_epochs=4,
+        rb_cfg = RainbowConfig(
+            lr=6.25e-5,
+            buffer_size=200_000,
+            batch_size=32,
             cnn_channels=[32, 64, 64, 64],
         )
         icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.005)
@@ -154,14 +146,10 @@ def build_configs_for_level(
     elif tier == "B":
         train_cfg.total_timesteps = 300_000
         train_cfg.max_steps_per_episode = 600
-        ppo_cfg = PPOConfig(
-            lr=2e-4,
-            entropy_coeff=0.08,
-            entropy_min=0.04,
-            clip_ratio=0.2,
-            rollout_length=2048,
-            minibatch_size=64,
-            n_epochs=4,
+        rb_cfg = RainbowConfig(
+            lr=6.25e-5,
+            buffer_size=200_000,
+            batch_size=32,
             cnn_channels=[32, 64, 64, 64],
         )
         icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.01)
@@ -169,16 +157,12 @@ def build_configs_for_level(
     else:  # tier C
         train_cfg.total_timesteps = 500_000
         train_cfg.max_steps_per_episode = 800
-        ppo_cfg = PPOConfig(
-            lr=2e-4,
-            entropy_coeff=0.10,
-            entropy_min=0.05,
-            clip_ratio=0.2,
-            rollout_length=4096,
-            minibatch_size=128,
-            n_epochs=4,
+        rb_cfg = RainbowConfig(
+            lr=6.25e-5,
+            buffer_size=300_000,
+            batch_size=32,
             cnn_channels=[32, 64, 64, 64],
         )
         icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.02)
 
-    return ppo_cfg, train_cfg, level_cfg, icm_cfg
+    return rb_cfg, train_cfg, level_cfg, icm_cfg
