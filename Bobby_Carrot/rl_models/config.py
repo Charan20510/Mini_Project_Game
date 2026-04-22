@@ -105,18 +105,18 @@ class TrainingConfig:
 class PPOConfig:
     """PPO-specific hyperparameters."""
 
-    lr: float = 3e-4           # Full LR — cold start on new 25-level split
+    lr: float = 1e-4           # Full LR — cold start on new 25-level split
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_ratio: float = 0.2    # Default PPO clip
     value_coeff: float = 0.5
     entropy_coeff: float = 0.15  # High start — exploring 25 levels from scratch
     max_grad_norm: float = 0.5
-    rollout_length: int = 4096   # Larger rollout covers more level variety per update
-    n_epochs: int = 4
+    rollout_length: int = 8192   # Larger rollout covers more level variety per update
+    n_epochs: int = 3
     minibatch_size: int = 128    # Scaled with rollout length
     normalize_advantages: bool = True
-    entropy_min: float = 0.08    # P6: raised from 0.04 — late levels need sustained exploration
+    entropy_min: float = 0.10    # P6: raised from 0.04 — late levels need sustained exploration
 
     # Network architecture
     cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64, 64])
@@ -127,12 +127,12 @@ class PPOConfig:
 class RainbowConfig:
     """Rainbow DQN hyperparameters (all 6 enhancements)."""
 
-    lr: float = 6.25e-5
+    lr: float = 1e-4
     gamma: float = 0.99
-    batch_size: int = 32
-    buffer_size: int = 200_000   # Deeper replay to cover 25-level diversity
-    learning_starts: int = 5_000 # Wait for diverse level coverage before first update
-    target_update_freq: int = 2_000
+    batch_size: int = 64         # 64 gives more stable distributional updates than 32
+    buffer_size: int = 100_000
+    learning_starts: int = 10_000  # Fill buffer with diverse experiences before first update
+    target_update_freq: int = 1_000
     max_grad_norm: float = 10.0
 
     # Double DQN — enabled by default (no extra param needed)
@@ -144,19 +144,22 @@ class RainbowConfig:
     per_alpha: float = 0.6
     per_beta_start: float = 0.4
     per_beta_end: float = 1.0
-    per_beta_anneal_steps: int = 100_000
+    per_beta_anneal_steps: int = 200_000
     per_epsilon: float = 1e-6
 
     # NoisyNet
     noisy_std: float = 0.5
 
     # N-step returns
-    n_step: int = 5              # Wider return window helps credit assignment across crumble chains
+    n_step: int = 3              # 3-step keeps targets stable under sparse rewards
 
     # C51 (Distributional)
+    # v_min/v_max must bracket the actual cumulative return range.
+    # With finish=300, 13 carrots×15×1.5≈293, approach bonuses ~100 → max ~700.
+    # Minimum: death(-50) + step penalties + crumble penalties → min ~-300.
     atom_size: int = 51
-    v_min: float = -120.0        # Extra headroom for death + stranding combo penalties
-    v_max: float = 250.0         # Level 26's 65 carrots pushes returns higher
+    v_min: float = -300.0
+    v_max: float = 700.0
 
     # Network architecture
     cnn_channels: List[int] = field(default_factory=lambda: [32, 64, 64, 64])
@@ -169,7 +172,7 @@ class ICMConfig:
     enabled: bool = True   # Enabled by default for crumble-heavy levels
     lr: float = 1e-3
     feature_dim: int = 128
-    intrinsic_reward_scale: float = 0.01
+    intrinsic_reward_scale: float = 0.02
     forward_loss_weight: float = 0.2
     inverse_loss_weight: float = 0.8
     reward_running_mean_decay: float = 0.99

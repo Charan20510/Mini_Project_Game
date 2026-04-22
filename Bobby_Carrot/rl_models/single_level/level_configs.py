@@ -103,45 +103,60 @@ def build_configs_for_level(
         # Pure carrot-collection (L1). Fast; the previous tuning worked.
         train_cfg.total_timesteps = 150_000
         train_cfg.max_steps_per_episode = 300
+        train_cfg.early_stop_success = 0.95
+        train_cfg.early_stop_window = 50
         rb_cfg = RainbowConfig(
             lr=1e-4,
-            buffer_size=100_000,
-            batch_size=32,
+            buffer_size=50_000,
+            batch_size=64,
+            learning_starts=5_000,
+            target_update_freq=500,
+            n_step=3,
+            v_min=-200.0,
+            v_max=600.0,
             cnn_channels=[32, 64, 64, 64],
         )
         icm_cfg = ICMConfig(enabled=False, intrinsic_reward_scale=0.0)
 
     elif tier == "A2":
-        # L2 / L3 — crumble-intro. The old "tier A" config catastrophically
-        # collapsed here: success peaked at 60% then dropped to 0% while
-        # average reward plateaued ~150 (shaping-gradient ≠ task-gradient).
-        # Fixes:
-        #   * Longer budget (250k) so the policy has time to find the
-        #     finish AFTER the carrot field without entropy pinning it.
-        #   * Larger rollout (4096) → lower variance in advantage targets
-        #     for the critical "step onto crumble" action.
-        #   * Higher entropy floor (0.06) to keep exploration alive past the
-        #     70k-step collapse point.
-        #   * Regression trigger lowered to 0.20 so a 60→40% crash rearms
-        #     the entropy boost immediately instead of waiting for a 40pt drop.
-        #   * ICM enabled at low scale to reward genuinely-novel states inside
-        #     the carrot field (weaving past collected tiles).
-        train_cfg.total_timesteps = 300_000
-        train_cfg.max_steps_per_episode = 300
-        train_cfg.regression_trigger_drop = 0.20
-        train_cfg.entropy_boost_steps = 20_000
-        train_cfg.entropy_boost_multiplier = 2.0
+        # L2 / L3 — crumble-intro.
+        #
+        # Root causes of prior failure (logs: avg_r=572 while success=0%):
+        #   1. v_min=-120 / v_max=250 did not bracket actual returns.
+        #      finish=300 alone exceeded v_max, saturating all atoms into
+        #      the wrong region and destroying the Q-value learning signal.
+        #   2. learning_starts=5000 → only ~16 random episodes before
+        #      training; the entire buffer was negative experiences,
+        #      causing monotonic Q-collapse (Q: 58→2 over 24k steps).
+        #   3. batch_size=32 → high-variance distributional updates early.
+        #   4. n_step=5 → deeply negative bootstrapped targets under sparse
+        #      rewards, reinforcing Q-underestimation.
+        #   5. No early stopping / best-model save → final ckpt = last ckpt,
+        #      not peak performance.
+        train_cfg.total_timesteps = 500_000
+        train_cfg.max_steps_per_episode = 350
         train_cfg.eval_interval = 10_000
         train_cfg.checkpoint_every = 10_000
-        train_cfg.lr_decay_final_fraction = 0.15
-        train_cfg.lr_decay_min_multiplier = 0.4
+        train_cfg.lr_decay_final_fraction = 0.20
+        train_cfg.lr_decay_min_multiplier = 0.3
+        train_cfg.early_stop_success = 0.95
+        train_cfg.early_stop_window = 50
+        train_cfg.early_stop_min_timesteps = 20_000
         rb_cfg = RainbowConfig(
-            lr=6.25e-5,
-            buffer_size=200_000,
-            batch_size=32,
+            lr=1e-4,
+            buffer_size=80_000,
+            batch_size=64,
+            learning_starts=8_000,
+            target_update_freq=1_000,
+            n_step=3,
+            # Return range: finish=300 + 13 carrots×15×1.5≈293 + approach≈100 → ~700 max
+            # Minimum: death(-50) + step+progress penalties → ~-200 min
+            v_min=-200.0,
+            v_max=700.0,
+            per_beta_anneal_steps=200_000,
             cnn_channels=[32, 64, 64, 64],
         )
-        icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.005)
+        icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.01)
 
     elif tier == "B":
         train_cfg.total_timesteps = 300_000

@@ -309,7 +309,17 @@ class BobbyCarrotEnv:
             if dist_before is not None and dist_after is not None:
                 distance_delta = float(dist_before - dist_after)
                 info["distance_delta"] = distance_delta
-                reward += self.reward_config.distance_delta_scale * distance_delta
+                
+                if not now_all_collected:
+                    # Phase 1: approach nearest carrot
+                    shaping = 0.3 * distance_delta
+                    reward += shaping
+                else:
+                    # Phase 2: all collected — approach finish ONLY, stronger signal
+                    shaping = 3.0 * distance_delta
+                    if self.finish_positions and self._is_finish_reachable(after_pos):
+                        shaping += 0.5  # Bonus for maintaining finish connectivity
+                    reward += shaping
 
             # --- Crumble approach bonus (P3 gated) ---
             # When the current section has 0 reachable targets (all behind
@@ -336,26 +346,6 @@ class BobbyCarrotEnv:
                                 and dist_crumble_after < dist_crumble_before):
                             reward += self.reward_config.crumble_approach_bonus
 
-            if not now_all_collected:
-                if dist_after is not None:
-                    if self.best_target_distance is None:
-                        self.best_target_distance = dist_after
-                    elif dist_after < self.best_target_distance:
-                        improvement = self.best_target_distance - dist_after
-                        reward += self.reward_config.new_best_target_distance_scale * float(improvement)
-                        self.best_target_distance = dist_after
-            else:
-                if dist_after is not None:
-                    # Continuous approach bonus: reward EVERY step closer to finish
-                    if dist_before is not None and dist_after < dist_before:
-                        reward += self.reward_config.finish_approach_bonus
-                    # Best-ever distance bonus (stronger pull)
-                    if self.best_finish_distance is None:
-                        self.best_finish_distance = dist_after
-                    elif dist_after < self.best_finish_distance:
-                        improvement = self.best_finish_distance - dist_after
-                        reward += self.reward_config.new_best_finish_distance_scale * float(improvement)
-                        self.best_finish_distance = dist_after
         elif collected_item:
             # Re-initialize the 'best distance' metrics since our targets completely changed
             if not now_all_collected:
@@ -444,8 +434,11 @@ class BobbyCarrotEnv:
             # Check if finish is still reachable after this crumble collapse
             if self.finish_positions and not self.bobby.dead:
                 if not self._is_finish_reachable(after_pos):
-                    reward += self.reward_config.finish_unreachable_penalty
-                    self.bobby.dead = True
+                    if not now_all_collected:
+                        reward -= 60.0  # Crumble-trap penalty (agent remains alive)
+                    else:
+                        reward += self.reward_config.finish_unreachable_penalty
+                        self.bobby.dead = True
 
         # Check if any targets are still reachable after this crumble collapse
         if not now_all_collected and self.target_positions and not self.bobby.dead:
@@ -1012,14 +1005,10 @@ class BobbyCarrotEnv:
 
     def _is_finish_reachable(self, pos: Tuple[int, int]) -> bool:
         """Check if any finish tile is reachable from pos via walkable tiles."""
-        if self._finish_reachable_cache_version == self._bfs_cache_version:
-            if self._finish_reachable_cache is not None:
-                return self._finish_reachable_cache
+        # The cache was removed because reachability strictly depends on the 
+        # agent's current position (pos), not just the map topology version.
         dist = self._bfs_shortest_distance(pos, self.finish_positions)
-        result = dist is not None
-        self._finish_reachable_cache = result
-        self._finish_reachable_cache_version = self._bfs_cache_version
-        return result
+        return dist is not None
 
     def _get_safe_crumble_positions(self) -> set[Tuple[int, int]]:
         """Return crumble tiles whose crossing advances collection without trapping the agent.

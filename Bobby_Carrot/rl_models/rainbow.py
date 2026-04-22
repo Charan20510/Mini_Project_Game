@@ -194,6 +194,7 @@ def train_rainbow(
     curriculum_window: List[float] = []
     losses: List[float] = []
     q_values_log: List[float] = []
+    best_rolling_success = 0.0
     start_time = time.time()
 
     print(f"[Rainbow] Starting training for {train_config.total_timesteps} timesteps")
@@ -370,6 +371,24 @@ def train_rainbow(
             ])
             csv_handle.flush()
 
+        # ── Best-model tracking (every episode boundary) ─────
+        rolling_window = max(20, min(train_config.early_stop_window, 50))
+        if len(episode_successes) >= rolling_window:
+            recent_success = float(np.mean(episode_successes[-rolling_window:]))
+            if recent_success > best_rolling_success:
+                best_rolling_success = recent_success
+                best_path = ckpt_dir / "rainbow_best.pt"
+                torch.save({
+                    "online_state_dict": online_net.state_dict(),
+                    "total_timesteps": total_timesteps,
+                    "episode_count": episode_count,
+                    "best_success": best_rolling_success,
+                }, best_path)
+                print(
+                    f"[Rainbow] New best model saved "
+                    f"(success={best_rolling_success:.2%} over last {rolling_window} eps)"
+                )
+
         # ── Curriculum Promotion ──────────────────────────────
         if (
             train_config.curriculum
@@ -404,10 +423,52 @@ def train_rainbow(
 
         # ── Periodic Evaluation ───────────────────────────────
         if total_timesteps % train_config.eval_interval == 0 and total_timesteps > 0:
-            _run_rainbow_eval(
+            eval_result = _run_rainbow_eval(
                 online_net, preprocessor, level_config.test_levels,
-                train_config, device, total_timesteps,
+                train_config, total_timesteps,
             )
+            # Anchor best-model to eval success so the saved checkpoint
+            # reflects the policy that generalises, not just a training peak.
+            eval_success = eval_result.get("success_rate", 0.0)
+            if eval_success > best_rolling_success:
+                best_rolling_success = eval_success
+                best_path = ckpt_dir / "rainbow_best.pt"
+                torch.save({
+                    "online_state_dict": online_net.state_dict(),
+                    "total_timesteps": total_timesteps,
+                    "episode_count": episode_count,
+                    "best_success": best_rolling_success,
+                    "source": "eval",
+                }, best_path)
+                print(
+                    f"[Rainbow] New best model saved from eval "
+                    f"(success={best_rolling_success:.2%})"
+                )
+
+        # ── Early Stopping ────────────────────────────────────
+        if (
+            train_config.early_stop_success > 0.0
+            and total_timesteps >= train_config.early_stop_min_timesteps
+            and len(episode_successes) >= train_config.early_stop_window
+        ):
+            recent_success = float(
+                np.mean(episode_successes[-train_config.early_stop_window:])
+            )
+            if recent_success >= train_config.early_stop_success:
+                print(
+                    f"[Rainbow] Early-stop: rolling success {recent_success:.1%} "
+                    f">= target {train_config.early_stop_success:.1%} "
+                    f"over last {train_config.early_stop_window} eps @ t={total_timesteps}"
+                )
+                best_path = ckpt_dir / "rainbow_best.pt"
+                torch.save({
+                    "online_state_dict": online_net.state_dict(),
+                    "total_timesteps": total_timesteps,
+                    "episode_count": episode_count,
+                    "best_success": recent_success,
+                }, best_path)
+                print(f"[Rainbow] Best model saved to {best_path} (success={recent_success:.2%})")
+                break
 
     # Final save
     final_path = ckpt_dir / "rainbow_final.pt"
@@ -432,7 +493,6 @@ def _run_rainbow_eval(
     preprocessor: ObservationPreprocessor,
     test_levels: List[Tuple[str, int]],
     train_config: TrainingConfig,
-    device: torch.device,
     timestep: int,
 ) -> Dict[str, float]:
     """Run deterministic evaluation on test levels."""
