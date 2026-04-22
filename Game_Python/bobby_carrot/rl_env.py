@@ -70,8 +70,12 @@ class RewardConfig:
     # signature in the L2 training logs. Softened so revisit costs are a nudge,
     # not a cliff; no_progress_penalty still catches pure dithering.
     revisit_collected_penalty: float = -0.1
-    repeat_position_penalty: float = -0.1
-    immediate_backtrack_penalty: float = -0.2
+    repeat_position_penalty: float = -0.15
+    immediate_backtrack_penalty: float = -0.4
+    # Escalating penalty once the agent has been in a sustained 2-state A→B→A cycle
+    # for ≥4 consecutive backtrack steps. Kicks in on top of immediate_backtrack_penalty
+    # and scales up to 4× so a prolonged oscillation becomes highly aversive.
+    oscillation_cycle_penalty: float = -0.8
     # Must be large enough that "each step toward finish" has a strongly positive
     # net reward even after step + post_collection penalties (−0.30/step combined).
     # At 0.15 the net was −0.15/step — no dense pull toward finish, causing the
@@ -171,6 +175,8 @@ class BobbyCarrotEnv:
         self.key_bucket_divisor = 2
 
         # Rendering is optional and lazily initialized.
+        self.backtrack_streak: int = 0  # consecutive steps where after_pos == recent_positions[-2]
+
         self._pygame = None
         self._screen = None
         self._render_assets: Optional[_EnvRenderAssets] = None
@@ -196,6 +202,7 @@ class BobbyCarrotEnv:
         self.level_completed = False
         self.invalid_streak = 0
         self.steps_since_progress = 0
+        self.backtrack_streak = 0
         self.best_target_distance = None
         self.best_finish_distance = None
         self.recent_positions.clear()
@@ -296,12 +303,27 @@ class BobbyCarrotEnv:
                 if after_tile in (20, 46):
                     reward += self.reward_config.revisit_collected_penalty
 
-            # Penalize immediate backtracking (going right back where you came from)
+            # 2-state oscillation detection (A→B→A→B→...):
+            # immediate_backtrack fires every step of the cycle.
+            # After 4 consecutive backtrack steps (2 full A↔B cycles), the
+            # oscillation_cycle_penalty escalates on top, growing each additional
+            # step to make sustained ping-pong deeply aversive.
             if len(self.recent_positions) >= 2 and after_pos == self.recent_positions[-2]:
                 reward += self.reward_config.immediate_backtrack_penalty
-            # Penalize revisiting any position within the loop window
-            elif after_pos in self.recent_positions:
-                reward += self.reward_config.repeat_position_penalty
+                self.backtrack_streak += 1
+                if self.backtrack_streak >= 4:
+                    reward += self.reward_config.oscillation_cycle_penalty * min(
+                        self.backtrack_streak - 3, 4
+                    )
+            else:
+                self.backtrack_streak = 0
+                # Penalize revisiting any position within the loop window (non-backtrack)
+                if after_pos in self.recent_positions:
+                    reward += self.reward_config.repeat_position_penalty
+        else:
+            # No movement: reset backtrack streak so invalid-action-only stalls don't
+            # accidentally carry streak state into the next valid move.
+            self.backtrack_streak = 0
 
         # Only compute distance shaping if we DID NOT just collect an item
         # because collecting an item shifts the nearest target metric entirely.
@@ -819,7 +841,7 @@ class BobbyCarrotEnv:
             
             path_grid = np.zeros(256, dtype=np.int16)
             for p_coord in self.recent_positions:
-                path_grid[p_coord[0] + p_coord[1] * 16] = 1
+                path_grid[p_coord[0] + p_coord[1] * 16] += 1  # accumulate visit count (0-loop_window)
 
             # Finish-critical path grid: marks tiles on shortest path to finish
             finish_path_grid = np.zeros(256, dtype=np.int16)

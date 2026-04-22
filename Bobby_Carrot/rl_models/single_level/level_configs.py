@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Tuple
 
-from ..config import ICMConfig, LevelConfig, RainbowConfig, TrainingConfig
+from ..config import ICMConfig, LevelConfig, PPOConfig, RainbowConfig, TrainingConfig
 
 
 # level_num -> tier letter
@@ -181,3 +181,170 @@ def build_configs_for_level(
         icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.02)
 
     return rb_cfg, train_cfg, level_cfg, icm_cfg
+
+
+def build_ppo_configs_for_level(
+    level_num: int,
+    checkpoint_root: str = ".",
+) -> Tuple[PPOConfig, TrainingConfig, LevelConfig, ICMConfig]:
+    """Build PPO-specific configs for single-map demo training.
+
+    The notebook uses train_ppo, not train_rainbow, so this function provides
+    properly tuned PPO hyperparameters per tier instead of the Rainbow presets
+    returned by build_configs_for_level.
+
+    Tier A2 (L2/L3) is the critical tier: it targets the 2-state oscillation
+    failure mode and applies:
+      - Smaller rollout (2048) for more frequent value-function updates
+      - High entropy start (0.20) to prevent premature policy sharpening
+      - Higher discount (0.995) to value long-horizon collection rewards
+      - ICM intrinsic signal to push exploration past reward-barren corridors
+      - Aggressive early-stop threshold (0.95 / 100 eps) + best-model save
+    """
+    if level_num not in LEVEL_TIER:
+        raise ValueError(
+            f"level_num must be 1-10 for the demo preset, got {level_num}"
+        )
+
+    tier = LEVEL_TIER[level_num]
+    root = Path(checkpoint_root)
+
+    level_cfg = LevelConfig(
+        train_levels=[("normal", level_num)],
+        test_levels=[("normal", level_num)],
+    )
+
+    # Shared TrainingConfig: all curriculum / anti-forgetting knobs disabled.
+    train_cfg = TrainingConfig(
+        device="auto",
+        checkpoint_dir=root / f"checkpoints_level{level_num}",
+        log_dir=root / f"logs_level{level_num}",
+        curriculum=False,
+        curriculum_start_levels=1,
+        curriculum_promotion_window=100,
+        curriculum_promotion_threshold=2.0,
+        curriculum_add_levels=0,
+        level_history_window=60,
+        curriculum_mastery_floor=0.0,
+        curriculum_min_quota=0.0,
+        curriculum_max_level_weight=1.0,
+        curriculum_dwell_windows=999,
+        curriculum_fallback_threshold=2.0,
+        curriculum_fallback_windows=999,
+        entropy_boost_steps=0,
+        entropy_boost_multiplier=1.0,
+        regression_trigger_drop=0.99,
+        teacher_ema_decay=1.0,        # Teacher frozen — no anti-forgetting overhead
+        teacher_kl_coef=0.0,
+        teacher_kl_mastery_coef=0.0,
+        curriculum_retention_floor=0.0,
+        observation_mode="full",
+        reward_scale=1.0,
+        reset_policy_head_on_resume=False,
+        checkpoint_every=20_000,
+        eval_interval=25_000,
+        eval_episodes_per_level=10,
+        log_interval=2_000,
+        lr_decay_final_fraction=0.25,
+        lr_decay_min_multiplier=0.3,
+    )
+
+    if tier == "A1":
+        train_cfg.total_timesteps = 150_000
+        train_cfg.max_steps_per_episode = 300
+        train_cfg.early_stop_success = 0.95
+        train_cfg.early_stop_window = 50
+        train_cfg.early_stop_min_timesteps = 10_000
+        ppo_cfg = PPOConfig(
+            lr=2e-4,
+            gamma=0.99,
+            entropy_coeff=0.15,
+            entropy_min=0.05,
+            rollout_length=1024,
+            n_epochs=4,
+            minibatch_size=64,
+        )
+        icm_cfg = ICMConfig(enabled=False, intrinsic_reward_scale=0.0)
+
+    elif tier == "A2":
+        # L2 / L3: crumble-intro + enclosure oscillation failure mode.
+        # Key fixes vs prior default PPO run:
+        #   rollout_length 8192→2048: more frequent value-function updates so the
+        #     critic learns that oscillating states have low future value faster.
+        #   entropy_coeff 0.15→0.20: prevents premature policy sharpening that
+        #     locks the agent into the A↔B ping-pong cycle.
+        #   gamma 0.99→0.995: discounts long-horizon carrot sequences less, giving
+        #     a stronger pull toward completing the full collection.
+        #   ICM scale 0.0→0.015: pushes exploration past reward-barren corridors
+        #     where dense collection rewards have been exhausted.
+        #   early_stop_window 50→100: requires sustained 95%+ performance so the
+        #     checkpoint is a robust policy, not a lucky peak.
+        train_cfg.total_timesteps = 500_000
+        train_cfg.max_steps_per_episode = 350
+        train_cfg.eval_interval = 10_000
+        train_cfg.checkpoint_every = 10_000
+        train_cfg.lr_decay_final_fraction = 0.20
+        train_cfg.early_stop_success = 0.95
+        train_cfg.early_stop_window = 100
+        train_cfg.early_stop_min_timesteps = 30_000
+        ppo_cfg = PPOConfig(
+            lr=1.5e-4,
+            gamma=0.995,
+            gae_lambda=0.95,
+            clip_ratio=0.2,
+            value_coeff=0.5,
+            entropy_coeff=0.20,
+            entropy_min=0.08,
+            max_grad_norm=0.5,
+            rollout_length=2048,
+            n_epochs=4,
+            minibatch_size=64,
+            normalize_advantages=True,
+            cnn_channels=[32, 64, 64, 64],
+            hidden_dim=256,
+        )
+        icm_cfg = ICMConfig(
+            enabled=True,
+            lr=1e-3,
+            feature_dim=128,
+            intrinsic_reward_scale=0.015,
+            forward_loss_weight=0.2,
+            inverse_loss_weight=0.8,
+            reward_running_mean_decay=0.99,
+        )
+
+    elif tier == "B":
+        train_cfg.total_timesteps = 400_000
+        train_cfg.max_steps_per_episode = 600
+        train_cfg.early_stop_success = 0.95
+        train_cfg.early_stop_window = 80
+        train_cfg.early_stop_min_timesteps = 40_000
+        ppo_cfg = PPOConfig(
+            lr=1e-4,
+            gamma=0.995,
+            entropy_coeff=0.15,
+            entropy_min=0.08,
+            rollout_length=2048,
+            n_epochs=4,
+            minibatch_size=64,
+        )
+        icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.01)
+
+    else:  # tier C
+        train_cfg.total_timesteps = 600_000
+        train_cfg.max_steps_per_episode = 800
+        train_cfg.early_stop_success = 0.95
+        train_cfg.early_stop_window = 80
+        train_cfg.early_stop_min_timesteps = 50_000
+        ppo_cfg = PPOConfig(
+            lr=8e-5,
+            gamma=0.995,
+            entropy_coeff=0.15,
+            entropy_min=0.08,
+            rollout_length=2048,
+            n_epochs=4,
+            minibatch_size=64,
+        )
+        icm_cfg = ICMConfig(enabled=True, intrinsic_reward_scale=0.02)
+
+    return ppo_cfg, train_cfg, level_cfg, icm_cfg

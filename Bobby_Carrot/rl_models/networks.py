@@ -174,8 +174,11 @@ class ObservationPreprocessor:
         channels[9, 0:8, 0:8] = key_gray * 0.33 + key_yellow * 0.33 + key_red * 0.34
         channels[9, 8:16, 8:16] = remaining
 
-        # Channel 17: Path Trace History
-        channels[17, :, :] = path_grid.reshape((16, 16)).astype(np.float32)
+        # Channel 17: Path Trace History (visit counts, normalised by loop_window=32)
+        # Values are 0..32 integers from the env; dividing by 32 gives a [0,1] signal
+        # that encodes how recently/frequently the agent has occupied each cell.
+        # High values mark oscillation hot-spots; the policy can learn to avoid them.
+        channels[17, :, :] = path_grid.reshape((16, 16)).astype(np.float32) / 32.0
 
         # Channel 18: Finish-Critical Path (BFS shortest path to finish)
         channels[18, :, :] = finish_path_grid.reshape((16, 16)).astype(np.float32)
