@@ -245,6 +245,9 @@ def build_ppo_configs_for_level(
         eval_interval=25_000,
         eval_episodes_per_level=10,
         log_interval=2_000,
+        greedy_gate_enabled=True,
+        greedy_gate_threshold=0.95,
+        greedy_gate_required_windows=10,
         lr_decay_final_fraction=0.25,
         lr_decay_min_multiplier=0.3,
     )
@@ -285,8 +288,9 @@ def build_ppo_configs_for_level(
         train_cfg.checkpoint_every = 10_000
         train_cfg.lr_decay_final_fraction = 0.20
         train_cfg.early_stop_success = 0.95
-        train_cfg.early_stop_window = 100
+        train_cfg.early_stop_window = 200
         train_cfg.early_stop_min_timesteps = 30_000
+        train_cfg.eval_episodes_per_level = 20
         ppo_cfg = PPOConfig(
             lr=1.5e-4,
             gamma=0.995,

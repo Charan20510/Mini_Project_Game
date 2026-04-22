@@ -100,6 +100,13 @@ class TrainingConfig:
     early_stop_window: int = 100          # Over the last N episodes
     early_stop_min_timesteps: int = 20_000  # Floor before checks arm
 
+    # Greedy-stability gate (single-level reliability runs).
+    # When enabled, rollout-based "best" snapshots are disabled and progress is
+    # judged from periodic greedy evaluation windows.
+    greedy_gate_enabled: bool = False
+    greedy_gate_threshold: float = 0.95
+    greedy_gate_required_windows: int = 10
+
 
 @dataclass
 class PPOConfig:

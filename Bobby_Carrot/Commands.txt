@@ -36,3 +36,13 @@ python -m Bobby_Carrot.rl_models.evaluate \
   --render \
   --render-fps 5 \
   --levels normal-2
+
+
+===============================    Verify L2 Stability (95% x 10)    ===============================
+
+python -m Bobby_Carrot.rl_models.verify_l2_stability \
+  --checkpoint /home/charan/Projects/Mini_Project_Game/checkpoints_level2/ppo/ppo_best.pt \
+  --windows 10 \
+  --episodes 20 \
+  --threshold 0.95 \
+  --max-steps 350

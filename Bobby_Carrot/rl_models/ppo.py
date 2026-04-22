@@ -266,6 +266,7 @@ def train_ppo(
     episode_successes: List[float] = []
     curriculum_window: List[float] = []
     best_avg_success = 0.0
+    greedy_gate_streak = 0
     level_cycle_idx = 0  # Round-robin level index for equal exposure
     start_time = time.time()
 
@@ -743,7 +744,7 @@ def train_ppo(
         # collapsed back to 0%. Check every rollout with a shorter window so
         # transient peaks survive as on-disk checkpoints.
         rolling_window = max(32, min(64, train_config.early_stop_window // 2))
-        if len(episode_successes) >= 20:
+        if (not train_config.greedy_gate_enabled) and len(episode_successes) >= 20:
             recent_success = float(np.mean(episode_successes[-rolling_window:]))
             if recent_success > best_avg_success:
                 best_avg_success = recent_success
@@ -794,6 +795,35 @@ def train_ppo(
                     "source": "eval",
                 }, best_path)
                 print(f"[PPO] New best model saved from eval (success={best_avg_success:.2%})")
+
+            # Optional greedy stability gate for single-level reliability runs.
+            if train_config.greedy_gate_enabled:
+                gate_threshold = float(train_config.greedy_gate_threshold)
+                gate_windows = int(train_config.greedy_gate_required_windows)
+                if eval_success >= gate_threshold:
+                    greedy_gate_streak += 1
+                else:
+                    greedy_gate_streak = 0
+                print(
+                    f"[PPO-GATE] greedy={eval_success:.2%} | "
+                    f"streak={greedy_gate_streak}/{gate_windows} "
+                    f"(threshold={gate_threshold:.0%})"
+                )
+                if greedy_gate_streak >= gate_windows:
+                    best_path = ckpt_dir / "ppo_best.pt"
+                    torch.save({
+                        "agent_state_dict": agent.state_dict(),
+                        "total_timesteps": total_timesteps,
+                        "episode_count": episode_count,
+                        "best_success": eval_success,
+                        "source": "greedy_gate",
+                        "greedy_gate_streak": greedy_gate_streak,
+                    }, best_path)
+                    print(
+                        f"[PPO] Greedy gate satisfied: {gate_windows} consecutive "
+                        f"windows >= {gate_threshold:.0%}. Saved {best_path} and stopping."
+                    )
+                    break
 
         # ── Early Stopping ────────────────────────────────────
         # Single-level demo runs pass early_stop_success > 0 to terminate once
