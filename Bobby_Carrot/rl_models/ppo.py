@@ -249,6 +249,7 @@ def train_ppo(
     csv_writer = csv.writer(csv_handle)
     csv_writer.writerow([
         "timestep", "episode", "avg_reward", "avg_success",
+        "avg_collected",
         "policy_loss", "value_loss", "entropy", "clip_fraction",
         "active_levels", "elapsed_sec",
     ])
@@ -264,6 +265,7 @@ def train_ppo(
     episode_reward = 0.0
     episode_rewards: List[float] = []
     episode_successes: List[float] = []
+    episode_collected_fracs: List[float] = []
     curriculum_window: List[float] = []
     best_avg_success = 0.0
     greedy_gate_streak = 0
@@ -330,6 +332,10 @@ def train_ppo(
                 success = 1.0 if info.get("level_completed", False) else 0.0
                 episode_rewards.append(episode_reward)
                 episode_successes.append(success)
+                total_collected = float(info.get("total_collected", 0.0))
+                total_targets = float(info.get("total_targets", 0.0))
+                collected_frac = (total_collected / total_targets) if total_targets > 0 else 0.0
+                episode_collected_fracs.append(collected_frac)
                 curriculum_window.append(success)
                 if len(curriculum_window) > train_config.curriculum_promotion_window:
                     curriculum_window = curriculum_window[-train_config.curriculum_promotion_window:]
@@ -611,6 +617,7 @@ def train_ppo(
         if total_timesteps % train_config.log_interval < ppo_config.rollout_length:
             avg_reward = float(np.mean(episode_rewards[-50:])) if episode_rewards else 0.0
             avg_success = float(np.mean(episode_successes[-50:])) if episode_successes else 0.0
+            avg_collected = float(np.mean(episode_collected_fracs[-50:])) if episode_collected_fracs else 0.0
             avg_pl = total_policy_loss / max(1, update_count)
             avg_vl = total_value_loss / max(1, update_count)
             avg_ent = total_entropy / max(1, update_count)
@@ -621,6 +628,7 @@ def train_ppo(
             print(
                 f"[PPO] t={total_timesteps:>7d} | ep={episode_count:>4d} | "
                 f"avg_r={avg_reward:>7.2f} | success={avg_success:>5.2%} | "
+                f"collect={avg_collected:>5.2%} | "
                 f"p_loss={avg_pl:.4f} | v_loss={avg_vl:.4f} | "
                 f"ent={avg_ent:.4f} | clip={avg_cf:.3f} | "
                 f"kl_t={avg_kl:.4f} | ret_std={return_std:.2f} | "
@@ -639,6 +647,7 @@ def train_ppo(
             print(f"[PPO]   per-level: {' | '.join(level_parts)}")
             csv_writer.writerow([
                 total_timesteps, episode_count, f"{avg_reward:.4f}", f"{avg_success:.4f}",
+                f"{avg_collected:.4f}",
                 f"{avg_pl:.6f}", f"{avg_vl:.6f}", f"{avg_ent:.6f}", f"{avg_cf:.4f}",
                 len(active_levels), f"{elapsed:.1f}",
             ])

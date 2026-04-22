@@ -42,15 +42,15 @@ ACTION_TO_STATE = {
 
 @dataclass
 class RewardConfig:
-    carrot: float = 15.0
+    carrot: float = 20.0
     egg: float = 25.0
     finish: float = 300.0
     death: float = -50.0
-    step: float = -0.05
+    step: float = -0.10
     invalid_move: float = -1.0
     # Phase 2 fix: distance shaping was 0.5 — too strong, caused the agent to
     # keep being pulled back toward tiles it had already cleared.
-    distance_delta_scale: float = 0.3
+    distance_delta_scale: float = 0.12
     new_best_target_distance_scale: float = 0.4
     new_best_finish_distance_scale: float = 1.5
     post_collection_step_penalty: float = -0.50
@@ -93,6 +93,8 @@ class RewardConfig:
     # chamber early and cannot return after the remaining chambers collapse.
     finish_orphan_penalty: float = -4.0           # Flat penalty for the trap crossing
     finish_orphan_per_item: float = -0.5          # Additional penalty per orphaned uncollected target
+    # Prevent reward inflation on episodes that end with zero collection.
+    no_collection_terminal_penalty: float = -120.0
 
 
 class _EnvRenderAssets:
@@ -333,15 +335,29 @@ class BobbyCarrotEnv:
                 info["distance_delta"] = distance_delta
                 
                 if not now_all_collected:
-                    # Phase 1: approach nearest carrot
-                    shaping = 0.3 * distance_delta
-                    reward += shaping
+                    # Phase 1: sparse directional shaping + stronger reward only for
+                    # setting a new best distance. This avoids inflated reward from
+                    # local oscillations that do not actually collect items.
+                    reward += self.reward_config.distance_delta_scale * distance_delta
+                    if self.best_target_distance is None or dist_after < self.best_target_distance:
+                        improvement = (
+                            float(self.best_target_distance - dist_after)
+                            if self.best_target_distance is not None else 1.0
+                        )
+                        reward += self.reward_config.new_best_target_distance_scale * max(1.0, improvement)
+                        self.best_target_distance = dist_after
                 else:
-                    # Phase 2: all collected — approach finish ONLY, stronger signal
-                    shaping = 3.0 * distance_delta
-                    if self.finish_positions and self._is_finish_reachable(after_pos):
-                        shaping += 0.5  # Bonus for maintaining finish connectivity
-                    reward += shaping
+                    # Phase 2: only award strong progress when a new best finish
+                    # distance is reached; otherwise keep shaping weak.
+                    reward += self.reward_config.distance_delta_scale * distance_delta
+                    if self.best_finish_distance is None or dist_after < self.best_finish_distance:
+                        improvement = (
+                            float(self.best_finish_distance - dist_after)
+                            if self.best_finish_distance is not None else 1.0
+                        )
+                        reward += self.reward_config.new_best_finish_distance_scale * max(1.0, improvement)
+                        reward += self.reward_config.finish_approach_bonus
+                        self.best_finish_distance = dist_after
 
             # --- Crumble approach bonus (P3 gated) ---
             # When the current section has 0 reachable targets (all behind
@@ -506,9 +522,17 @@ class BobbyCarrotEnv:
         if self.step_count >= self.max_steps:
             done = True
 
+        if done and not info.get("level_completed", False):
+            total_collected = self.bobby.carrot_count + self.bobby.egg_count
+            total_targets = self.map_info.carrot_total + self.map_info.egg_total
+            if total_targets > 0 and total_collected == 0:
+                reward += self.reward_config.no_collection_terminal_penalty
+
         self.episode_done = done
         info["collected_carrot"] = carrot_delta
         info["collected_egg"] = egg_delta
+        info["total_collected"] = self.bobby.carrot_count + self.bobby.egg_count
+        info["total_targets"] = self.map_info.carrot_total + self.map_info.egg_total
         info["steps"] = self.step_count
         info["position"] = after_pos
         info["moved"] = moved
