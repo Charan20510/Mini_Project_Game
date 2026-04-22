@@ -721,7 +721,7 @@ def train_ppo(
         regression_detected = False
         for lvl in active_levels:
             hist = level_success_history.get(lvl, [])
-            if len(hist) < _LEVEL_HISTORY_WINDOW:
+            if len(hist) < 10:
                 continue
             recent = float(np.mean(hist[-_LEVEL_HISTORY_WINDOW:]))
             prev_max = level_success_max.get(lvl, 0.0)
@@ -782,10 +782,7 @@ def train_ppo(
             # or stochastic-eval success is the strongest signal we've seen,
             # snapshot the agent. This pins best to a policy that actually
             # generalises, not just one that got lucky during training rollouts.
-            eval_success = max(
-                eval_metrics.get("success_rate", 0.0),
-                eval_metrics.get("stoch_success_rate", 0.0),
-            )
+            eval_success = eval_metrics.get("success_rate", 0.0)
             if eval_success > best_avg_success:
                 best_avg_success = eval_success
                 best_path = ckpt_dir / "ppo_best.pt"

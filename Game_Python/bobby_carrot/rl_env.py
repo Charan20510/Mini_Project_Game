@@ -45,7 +45,7 @@ class RewardConfig:
     carrot: float = 15.0
     egg: float = 25.0
     finish: float = 300.0
-    death: float = -100.0
+    death: float = -50.0
     step: float = -0.05
     invalid_move: float = -1.0
     # Phase 2 fix: distance shaping was 0.5 — too strong, caused the agent to
@@ -53,7 +53,7 @@ class RewardConfig:
     distance_delta_scale: float = 0.3
     new_best_target_distance_scale: float = 0.4
     new_best_finish_distance_scale: float = 1.5
-    post_collection_step_penalty: float = -0.25
+    post_collection_step_penalty: float = -0.50
     no_progress_penalty_after: int = 60
     no_progress_penalty: float = -0.2
     no_progress_penalty_hard_after: int = 150

@@ -130,7 +130,7 @@ def build_configs_for_level(
         #     the entropy boost immediately instead of waiting for a 40pt drop.
         #   * ICM enabled at low scale to reward genuinely-novel states inside
         #     the carrot field (weaving past collected tiles).
-        train_cfg.total_timesteps = 250_000
+        train_cfg.total_timesteps = 300_000
         train_cfg.max_steps_per_episode = 300
         train_cfg.regression_trigger_drop = 0.20
         train_cfg.entropy_boost_steps = 20_000
@@ -142,10 +142,10 @@ def build_configs_for_level(
         ppo_cfg = PPOConfig(
             lr=2.5e-4,
             entropy_coeff=0.12,
-            entropy_min=0.06,
+            entropy_min=0.08,
             clip_ratio=0.2,
             rollout_length=4096,
-            minibatch_size=128,
+            minibatch_size=256,
             n_epochs=4,
             cnn_channels=[32, 64, 64, 64],
         )
